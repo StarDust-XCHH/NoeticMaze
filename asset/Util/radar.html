@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lidar 实时监控 - 鼠标旋转版</title>
+    <style>
+        body {
+            background-color: #0a0a0a;
+            color: #0f0;
+            font-family: 'Courier New', monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            margin: 0;
+            overflow: hidden;
+            /* 防止拖动时文本被选中 */
+            user-select: none;
+        }
+        #controls { margin-bottom: 15px; text-align: center; z-index: 10; }
+        button {
+            background-color: #0f0; color: #000; border: none;
+            padding: 10px 20px; font-size: 16px; cursor: pointer;
+            font-weight: bold; border-radius: 4px; margin: 0 5px;
+            transition: background 0.2s;
+        }
+        button:hover { background-color: #0c0; }
+        button:disabled { background-color: #333; color: #666; cursor: not-allowed; }
+        #canvas-container {
+            position: relative;
+            /* 鼠标在画布上显示为十字，提示可拖动 */
+            cursor: move;
+        }
+        canvas {
+            background-color: #000;
+            border: 2px solid #333;
+            border-radius: 50%;
+            box-shadow: 0 0 30px rgba(0, 255, 0, 0.1);
+            display: block;
+        }
+        .info-panel {
+            margin-top: 15px; font-size: 14px;
+            background: rgba(0, 255, 0, 0.05);
+            padding: 10px 30px; border: 1px solid #0f0;
+            border-radius: 5px; text-align: center;
+            pointer-events: none; /* 防止挡住鼠标事件 */
+        }
+        #sweepCount { color: #f90; font-weight: bold; }
+        #rotationInfo { color: #33f0ff; margin-left: 10px; }
+    </style>
+</head>
+<body>
+
+<div id="controls">
+    <button id="connectBtn">连接串口雷达</button>
+    <button id="simBtn" style="background-color: #f90;">切换模拟模式</button>
+    <button id="resetViewBtn" style="background-color: #555; color: white;">重置视图</button>
+    <div id="status" style="margin-top: 5px;">状态: 等待连接 (115200bps)</div>
+</div>
+
+<div id="canvas-container">
+    <canvas id="radarCanvas" width="700" height="700"></canvas>
+</div>
+
+<div class="info-panel">
+    <div id="zoomInfo">当前视距: 10.00 米 (1.0x)</div>
+    <div>
+        当前圈数: <span id="sweepCount">0</span> |
+        视角旋转: <span id="rotationInfo">0°</span> |
+        状态: <span id="frameStatus">等待起始帧...</span>
+    </div>
+    <div style="font-size: 12px; color: #888; margin-top: 5px;">提示：滚轮缩放，鼠标拖动旋转</div>
+</div>
+
+<script>
+    const connectBtn = document.getElementById('connectBtn');
+    const simBtn = document.getElementById('simBtn');
+    const resetViewBtn = document.getElementById('resetViewBtn');
+    const statusDiv = document.getElementById('status');
+    const zoomInfo = document.getElementById('zoomInfo');
+    const frameStatus = document.getElementById('frameStatus');
+    const sweepCountSpan = document.getElementById('sweepCount');
+    const rotationInfoSpan = document.getElementById('rotationInfo');
+    const canvas = document.getElementById('radarCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // 配置参数
+    const MAX_DISTANCE = 10000;
+    const RADIUS = canvas.width / 2;
+    const CENTER_X = canvas.width / 2;
+    const CENTER_Y = canvas.height / 2;
+
+    // --- 状态变量 (新增视图控制) ---
+    let displayFrame = new Array(360).fill(0);
+    let zoomLevel = 1.0;
+    let currentScanAngle = 0;
+
+    // 视图旋转角度（度）
+    let viewRotation = 0;
+
+    // 鼠标交互状态
+    let isDragging = false;
+    let lastMouseX = 0;
+    // 旋转灵敏度 (数值越大，拖动同样距离旋转角度越小)
+    const dragSensitivity = 0.5;
+
+    // 1. 串口解析核心 (保持不变)
+    async function readLoop(reader) {
+        let buffer = "";
+        while (true) {
+            try {
+                const { value, done } = await reader.read();
+                if (value) {
+                    buffer += value;
+                    let lines = buffer.split('\n');
+                    buffer = lines.pop();
+                    for (let line of lines) parseLidarLine(line.trim());
+                }
+                if (done) break;
+            } catch (error) {
+                statusDiv.innerText = "读取出错: " + error;
+                break;
+            }
+        }
+    }
+
+    function parseLidarLine(line) {
+        if (!line) return;
+        if (line.includes("Lidar Snapshot")) {
+            const sweepMatch = line.match(/\[(\d+)\]/);
+            if (sweepMatch) sweepCountSpan.innerText = sweepMatch[1];
+            frameStatus.innerText = "正在接收...";
+            return;
+        }
+        if (line.includes("End")) {
+            frameStatus.innerText = "刷新完成";
+            return;
+        }
+        const pointRegex = /\[\s*(\d+):\s*(\d+)\]/g;
+        let match;
+        while ((match = pointRegex.exec(line)) !== null) {
+            const angle = parseInt(match[1]);
+            const distance = parseInt(match[2]);
+            if (angle >= 0 && angle < 360) {
+                displayFrame[angle] = distance;
+                currentScanAngle = angle;
+            }
+        }
+    }
+
+    // 2. 绘图逻辑 (重构以支持旋转)
+    function draw() {
+        // 清空背景
+        ctx.save(); // 保存未变换前的状态
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        const currentViewMax = MAX_DISTANCE / zoomLevel;
+
+        // --- 应用视图变换 (关键修改) ---
+        // 1. 将原点移到画布中心
+        ctx.translate(CENTER_X, CENTER_Y);
+        // 2. 应用用户拖动产生的旋转 (角度转弧度)
+        ctx.rotate(viewRotation * Math.PI / 180);
+        // 3. 将原点移回左上角，以便后续绘图逻辑不变
+        ctx.translate(-CENTER_X, -CENTER_Y);
+
+        // A. 绘制雷达网格 (随视图旋转)
+        ctx.strokeStyle = '#1a331a';
+        ctx.lineWidth = 1;
+        for (let i = 1; i <= 4; i++) {
+            ctx.beginPath();
+            ctx.arc(CENTER_X, CENTER_Y, RADIUS * (i / 4), 0, Math.PI * 2);
+            ctx.stroke();
+        }
+        // 绘制十字刻度线
+        ctx.beginPath();
+        ctx.moveTo(CENTER_X - RADIUS, CENTER_Y); ctx.lineTo(CENTER_X + RADIUS, CENTER_Y);
+        ctx.moveTo(CENTER_X, CENTER_Y - RADIUS); ctx.lineTo(CENTER_X, CENTER_Y + RADIUS);
+        ctx.stroke();
+
+        // B. 绘制点云 (随视图旋转)
+        ctx.fillStyle = '#0f0';
+        ctx.shadowBlur = 5;
+        ctx.shadowColor = '#0f0';
+
+        for (let angle = 0; angle < 360; angle++) {
+            const dist = displayFrame[angle];
+            if (dist <= 0 || dist > currentViewMax) continue;
+
+            // 原始坐标映射 (0度在上方)
+            const rad = (angle - 90) * (Math.PI / 180);
+            const r = (dist / currentViewMax) * RADIUS;
+            const x = CENTER_X + r * Math.cos(rad);
+            const y = CENTER_Y + r * Math.sin(rad);
+
+            ctx.beginPath();
+            ctx.arc(x, y, 2, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // C. 绘制实时扫描线 (随视图旋转)
+        const scanRad = (currentScanAngle - 90) * (Math.PI / 180);
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = 'rgba(0, 255, 0, 0.3)';
+        ctx.beginPath();
+        ctx.moveTo(CENTER_X, CENTER_Y);
+        ctx.lineTo(CENTER_X + RADIUS * Math.cos(scanRad), CENTER_Y + RADIUS * Math.sin(scanRad));
+        ctx.stroke();
+
+        ctx.restore(); // 恢复变换前的状态，防止影响下一次绘图
+
+        requestAnimationFrame(draw);
+    }
+
+    // --- 3. 交互控制 (重构 & 新增) ---
+
+    // 滚轮缩放 (保持不变)
+    canvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        zoomLevel *= (e.deltaY < 0) ? 1.1 : 0.9;
+        zoomLevel = Math.max(0.1, Math.min(zoomLevel, 20));
+        zoomInfo.innerText = `当前视距: ${(MAX_DISTANCE / zoomLevel / 1000).toFixed(2)} 米 (${zoomLevel.toFixed(1)}x)`;
+    }, { passive: false });
+
+    // === 新增：鼠标拖动旋转逻辑 ===
+    canvas.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        lastMouseX = e.clientX; // 记录按下时的横坐标
+    });
+
+    // 监听 window 防止鼠标移出画布后抬起导致状态错误
+    window.addEventListener('mouseup', () => {
+        isDragging = false;
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+
+        // 计算鼠标横向移动距离
+        const deltaX = e.clientX - lastMouseX;
+
+        // 更新旋转角度 (左右拖动改变角度)
+        viewRotation += deltaX * dragSensitivity;
+
+        // 将角度标准化在 0-359 之间 (可选，方便显示)
+        viewRotation = (viewRotation % 360 + 360) % 360;
+
+        // 更新 UI 显示
+        rotationInfoSpan.innerText = `${Math.round(viewRotation)}°`;
+
+        // 更新最后鼠标位置
+        lastMouseX = e.clientX;
+    });
+
+    // 重置视图按钮
+    resetViewBtn.addEventListener('click', () => {
+        zoomLevel = 1.0;
+        viewRotation = 0;
+        zoomInfo.innerText = `当前视距: ${(MAX_DISTANCE / 1000).toFixed(2)} 米 (1.0x)`;
+        rotationInfoSpan.innerText = `0°`;
+    });
+
+    // Web Serial 连接 (保持不变)
+    connectBtn.addEventListener('click', async () => {
+        try {
+            const port = await navigator.serial.requestPort();
+            await port.open({ baudRate: 115200 });
+            statusDiv.innerText = "状态: 已连接硬件";
+            connectBtn.disabled = true;
+            const textDecoder = new TextDecoderStream();
+            port.readable.pipeTo(textDecoder.writable);
+            readLoop(textDecoder.readable.getReader());
+        } catch (err) {
+            statusDiv.innerText = "状态: 错误 " + err;
+        }
+    });
+
+    // 4. 模拟器 (保持不变)
+    let simTimer = null;
+    let simSweep = 0;
+    simBtn.addEventListener('click', () => {
+        if (simTimer) {
+            clearInterval(simTimer);
+            simTimer = null;
+            statusDiv.innerText = "状态: 模拟停止";
+        } else {
+            statusDiv.innerText = "状态: 模拟中...";
+            let angleIdx = 0;
+            simTimer = setInterval(() => {
+                if (angleIdx === 0) parseLidarLine(`--- Lidar Snapshot [${simSweep++}] ---`);
+                let line = "";
+                for (let i = 0; i < 15; i++) {
+                    let curr = angleIdx + i;
+                    if (curr >= 360) break;
+                    // 模拟一个方形房间
+                    let rad = curr * Math.PI / 180;
+                    let d = 3000 / Math.max(Math.abs(Math.cos(rad)), Math.abs(Math.sin(rad))) + (Math.random()-0.5)*50;
+                    line += `[${curr.toString().padStart(3, ' ')}:${Math.floor(d).toString().padStart(4, ' ')}] `;
+                }
+                parseLidarLine(line);
+                angleIdx += 15;
+                if (angleIdx >= 360) {
+                    parseLidarLine(`--- End ---`);
+                    angleIdx = 0;
+                }
+            }, 50);
+        }
+    });
+
+    // 启动绘图循环
+    draw();
+</script>
+</body>
+</html>

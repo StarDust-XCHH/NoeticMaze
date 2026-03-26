@@ -1,0 +1,8 @@
+//
+// Created by lmtgy on 2026/3/27.
+//
+
+#ifndef NOETICMAZE_ALGORITHMBRAIN_H
+#define NOETICMAZE_ALGORITHMBRAIN_H
+
+#endif //NOETICMAZE_ALGORITHMBRAIN_H

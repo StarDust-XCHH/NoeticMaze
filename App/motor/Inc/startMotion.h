@@ -1,0 +1,8 @@
+//
+// Created by lmtgy on 2026/3/27.
+//
+
+#ifndef NOETICMAZE_STARTMOTION_H
+#define NOETICMAZE_STARTMOTION_H
+
+#endif //NOETICMAZE_STARTMOTION_H
