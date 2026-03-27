@@ -34,15 +34,29 @@ message("Build type: " ${CMAKE_BUILD_TYPE})
 # Enable CMake support for ASM and C languages
 enable_language(C ASM)
 
-# Create an executable object type
-add_executable(${CMAKE_PROJECT_NAME}
-        App/motor/Src/startMotion.c
-        App/global/Src/global_vault.c
-        App/imu/Src/imu.c
-        App/lidar/Src/lidar.c
-        App/algorithmBrain/Src/algorithmBrain.c
-        App/algorithmBrain/Inc/algorithmBrain.h
+
+# Hardware FPU Configuration (STM32F446 - Cortex-M4)
+add_compile_options(
+        -mfloat-abi=hard
+        -mfpu=fpv4-sp-d16
 )
+add_link_options(
+        -mfloat-abi=hard
+        -mfpu=fpv4-sp-d16
+        -Wl,-u,_printf_float
+        -Wl,-u,_scanf_float
+)
+
+# Create an executable object type
+# 递归查找 App 目录下所有的 .c 和 .h 文件
+# CONFIGURE_DEPENDS 的作用是：当你在这些目录下新增或删除文件时，CMake 会自动重新配置，无需手动重载。
+file(GLOB_RECURSE APP_SOURCES CONFIGURE_DEPENDS
+        "App/*.c"
+        "App/*.h"
+)
+
+# 使用收集到的文件列表生成可执行文件
+add_executable(${CMAKE_PROJECT_NAME} ${APP_SOURCES})
 
 # Add STM32CubeMX generated sources
 add_subdirectory(cmake/stm32cubemx)
@@ -52,26 +66,59 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined library search paths
 )
 
+
+set(DSP_SOURCE_DIR "${CMAKE_SOURCE_DIR}/Drivers/CMSIS/DSP/Source")
+file(GLOB DSP_SOURCES
+        "${DSP_SOURCE_DIR}/CommonTables/arm_common_tables.c"
+        "${DSP_SOURCE_DIR}/FastMathFunctions/arm_cos_f32.c"
+        "${DSP_SOURCE_DIR}/FastMathFunctions/arm_sin_f32.c"
+        "${DSP_SOURCE_DIR}/FastMathFunctions/arm_atan2_f32.c"
+        "${DSP_SOURCE_DIR}/BasicMathFunctions/arm_offset_f32.c"
+        "${DSP_SOURCE_DIR}/SupportFunctions/arm_copy_q15.c"
+        "${DSP_SOURCE_DIR}/ControllerFunctions/arm_pid_init_f32.c"
+)
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
+        ${DSP_SOURCES}
 )
 
 # Add include paths
-# Add include paths
+# 1. 自动查找 App 目录下所有的头文件，并提取它们所在的目录
+file(GLOB_RECURSE ALL_APP_HEADERS "${CMAKE_SOURCE_DIR}/App/*.h")
+set(APP_INCLUDE_DIRS "")
+foreach(header_file ${ALL_APP_HEADERS})
+    get_filename_component(header_dir ${header_file} DIRECTORY)
+    list(APPEND APP_INCLUDE_DIRS ${header_dir})
+endforeach()
+# 2. 去除重复的目录路径
+if(APP_INCLUDE_DIRS)
+    list(REMOVE_DUPLICATES APP_INCLUDE_DIRS)
+endif()
+# 3. 添加到目标包含路径
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
-        # Add user defined include paths
-        App/global/Inc
-        App/motor/Inc
-        App/imu/Inc
-        App/lidar/Inc
-        App/bluetooth/Inc
-        App/algorithmBrain/Inc
+        # 自动生成的 App 子目录路径
+        ${APP_INCLUDE_DIRS}
+        ${CMAKE_SOURCE_DIR}/App/lidar/Inc
+        # 固定的 CMSIS/库 路径（这些通常不需要递归，保持原样即可）
+        ${CMAKE_SOURCE_DIR}/Drivers/CMSIS/DSP/Include
+        ${CMAKE_SOURCE_DIR}/Drivers/CMSIS/Include
+        ${CMAKE_SOURCE_DIR}/Drivers/CMSIS/Core/Include
 )
 
 # Add project symbols (macros)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined symbols
+        USE_HAL_DRIVER
+        STM32F446xx
+        ARM_MATH_CM4
+        EMPL_TARGET_STM32F4
+        MPU6500
+)
+
+# Link options
+target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
+        -u _printf_float
 )
 
 # Add linked libraries

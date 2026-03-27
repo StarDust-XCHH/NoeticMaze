@@ -14,3 +14,10 @@ void StartImuTask(void *argument)
         osDelay(5);
     }
 }
+
+
+// 预留接口
+float Get_Imu_Angular_Velocity_Z(void)
+{
+    return 0.0f;
+}
