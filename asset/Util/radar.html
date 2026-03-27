@@ -56,7 +56,7 @@
     <button id="connectBtn">连接串口雷达</button>
     <button id="simBtn" style="background-color: #f90;">切换模拟模式</button>
     <button id="resetViewBtn" style="background-color: #555; color: white;">重置视图</button>
-    <div id="status" style="margin-top: 5px;">状态: 等待连接 (115200bps)</div>
+    <div id="status" style="margin-top: 5px;">状态: 等待连接 (1500000bps)</div>
 </div>
 
 <div id="canvas-container">
@@ -265,7 +265,7 @@
     connectBtn.addEventListener('click', async () => {
         try {
             const port = await navigator.serial.requestPort();
-            await port.open({ baudRate: 115200 });
+            await port.open({ baudRate: 1500000 });
             statusDiv.innerText = "状态: 已连接硬件";
             connectBtn.disabled = true;
             const textDecoder = new TextDecoderStream();

@@ -36,51 +36,85 @@ void Lidar_Init(Lidar_HandleTypeDef *hlidar, UART_HandleTypeDef *huart) {
     memset(hlidar, 0, sizeof(Lidar_HandleTypeDef));
     hlidar->huart = huart;
     hlidar->last_start_angle = 0.0f;
+    hlidar->last_dma_pos = 0; // [新增：初始化 DMA 位置]
 
-    // 创建一个深度相同的空闲队列用于管理内存池
-    // 注意：CubeMX 已经生成了 LidarQueueHandle，这里我们只需创建 FreeQueue
     osMessageQueueAttr_t free_q_attr = { .name = "LidarFreeQ" };
     LidarFreeQueueHandle = osMessageQueueNew(MAP_POOL_SIZE, sizeof(LidarMap_t*), &free_q_attr);
 
-    // 将所有内存块指针投入空闲队列
     for (int i = 0; i < MAP_POOL_SIZE; i++) {
         LidarMap_t* ptr = &LidarMapPool[i];
         osMessageQueuePut(LidarFreeQueueHandle, &ptr, 0, osWaitForever);
     }
 
-    // 从空闲队列取出一个作为当前正在解析的 Buffer
-    osMessageQueueGet(LidarFreeQueueHandle, &hlidar->current_map, NULL, osWaitForever);
+    // [修改：修复隐患三]
+    // 在系统启动前（调度器未运行），调用带延时的 FreeRTOS API 会触发 HardFault
+    // 因为前面刚塞了数据，这里必然有指针，直接将超时设为 0 即可安全取出
+    osMessageQueueGet(LidarFreeQueueHandle, &hlidar->current_map, NULL, 0);
 }
 
 void Lidar_Start(Lidar_HandleTypeDef *hlidar) {
     uint8_t start_cmd[9] = {0xA5, 0x82, 05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x22};
     HAL_UART_Transmit(hlidar->huart, start_cmd, sizeof(start_cmd), 100);
-    HAL_UARTEx_ReceiveToIdle_DMA(hlidar->huart, hlidar->rx_dma_buf, sizeof(hlidar->rx_dma_buf));
 
-    // 关闭过半中断，减少系统开销
+    // 启动空闲中断 + DMA 接收 (仅启动一次，后续交由 Circular 模式硬件托管)
+    HAL_UARTEx_ReceiveToIdle_DMA(hlidar->huart, hlidar->rx_dma_buf, sizeof(hlidar->rx_dma_buf));
     __HAL_DMA_DISABLE_IT(hlidar->huart->hdmarx, DMA_IT_HT);
 }
 
+
+
 // 在 USART 的 HAL_UARTEx_RxEventCallback 中调用此函数
-void Lidar_ParseDMA_ISR(Lidar_HandleTypeDef *hlidar, uint16_t size) {
-    // 1. 将数据写入 FIFO
-    for (uint16_t i = 0; i < size; i++) {
-        uint16_t next = (hlidar->head + 1) % LIDAR_FIFO_SIZE;
-        if (next != hlidar->tail) {
-            hlidar->fifo[hlidar->head] = hlidar->rx_dma_buf[i];
-            hlidar->head = next;
+// [修改：重写 ISR 回调以支持 Circular DMA，修复隐患二]
+void Lidar_ParseDMA_ISR(Lidar_HandleTypeDef *hlidar, uint16_t Size) {
+    // 在 ReceiveToIdle_DMA 配合 Circular 模式时，Size 表示当前写入缓冲区的绝对偏移量
+    uint16_t curr_pos = Size;
+
+    if (curr_pos == hlidar->last_dma_pos) return; // 无新数据
+
+    // 1. 从 rx_dma_buf 提取新到达的数据并送入软件 FIFO
+    if (curr_pos > hlidar->last_dma_pos) {
+        // 没有发生缓冲区回环，直接线性拷贝
+        for (uint16_t i = hlidar->last_dma_pos; i < curr_pos; i++) {
+            uint16_t next = (hlidar->head + 1) & LIDAR_FIFO_MASK;
+            if (next != hlidar->tail) {
+                hlidar->fifo[hlidar->head] = hlidar->rx_dma_buf[i];
+                hlidar->head = next;
+            }
+        }
+    } else {
+        // 发生了缓冲区回环 (curr_pos < last_dma_pos)，分两段拷贝
+        // a. 拷贝尾部剩余数据
+        for (uint16_t i = hlidar->last_dma_pos; i < sizeof(hlidar->rx_dma_buf); i++) {
+            uint16_t next = (hlidar->head + 1) & LIDAR_FIFO_MASK;
+            if (next != hlidar->tail) {
+                hlidar->fifo[hlidar->head] = hlidar->rx_dma_buf[i];
+                hlidar->head = next;
+            }
+        }
+        // b. 拷贝头部新数据
+        for (uint16_t i = 0; i < curr_pos; i++) {
+            uint16_t next = (hlidar->head + 1) & LIDAR_FIFO_MASK;
+            if (next != hlidar->tail) {
+                hlidar->fifo[hlidar->head] = hlidar->rx_dma_buf[i];
+                hlidar->head = next;
+            }
         }
     }
 
-    // 2. 重启 DMA 接收
-    HAL_UARTEx_ReceiveToIdle_DMA(hlidar->huart, hlidar->rx_dma_buf, sizeof(hlidar->rx_dma_buf));
-    __HAL_DMA_DISABLE_IT(hlidar->huart->hdmarx, DMA_IT_HT);
+    // 更新游标，处理 DMA 恰好写满边界的情况
+    hlidar->last_dma_pos = curr_pos;
+    if (hlidar->last_dma_pos >= sizeof(hlidar->rx_dma_buf)) {
+        hlidar->last_dma_pos = 0;
+    }
 
-    // 3. 发送任务通知唤醒 Task3 (非阻塞，极速返回)
+    // 注意：这里删除了原先的 HAL_UARTEx_ReceiveToIdle_DMA 重启代码！硬件会自动继续循环！
+
+    // 2. 发送任务通知唤醒 Task3
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
     vTaskNotifyGiveFromISR(LidarRouteTaskHandle, &xHigherPriorityTaskWoken);
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
+
 
 /* ==========================================
  * 解析核心函数 (Task 内联调用)
@@ -125,12 +159,26 @@ static uint8_t Lidar_DecodeFrame_DSP(Lidar_HandleTypeDef *hlidar, const uint8_t 
             base = 4 + (i << 1);
             dis = (uint16_t)(((uint16_t)payload[base + 1] << 8) | payload[base]);
 
-            if (dis == 0) continue;
+            // --- 修改后的过滤逻辑 ---
+            // 只有在 [MIN, MAX] 范围内的点才被视为有效
+            if (dis < LIDAR_MIN_RANGE || dis > LIDAR_MAX_RANGE) {
+                continue;
+            }
+            // -----------------------
 
             final_angle = abs_angles[i]; // 这里只做赋值，声明已经移到了顶部
-            if (final_angle >= 360.0f) final_angle -= 360.0f;
+            // 归一化到 360 度以内 (因为极限值只有 539，减一次必进 360 以内)
+            if (final_angle >= 360.0f) {
+                final_angle -= 360.0f;
+            }
 
-            angle_idx = (int)(final_angle + 0.5f) % 360;
+            // 直接呼叫硬件 VCVTR 指令，单周期完成浮点转整型+四舍五入
+            angle_idx = lrintf(final_angle);
+
+            // 干掉 % 360，省下十几个 CPU 周期
+            if (angle_idx >= 360) {
+                angle_idx -= 360;
+            }
             hlidar->current_map->distance[angle_idx] = dis;
         }
     }
@@ -140,28 +188,37 @@ static uint8_t Lidar_DecodeFrame_DSP(Lidar_HandleTypeDef *hlidar, const uint8_t 
 /* ==========================================
  * Task 3: Lidar DMA 路由任务
  * ========================================== */
+/* ==========================================
+ * Task 3: Lidar DMA 路由任务
+ * ========================================== */
 void StartLidarRouteTask(void *argument) {
     uint32_t straight_frame_counter = 0;
-    const float TURN_THRESHOLD = 0.2f; // 角速度转弯判定阈值 (根据实际单位调整)
 
     for(;;) {
-        // 1. 等待串口 IDLE 中断唤醒 (超时时间 100ms 兜底)
+        // 1. 等待串口 IDLE 中断唤醒
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
 
-        uint16_t available = (hlidar1.head >= hlidar1.tail) ?
-                             (hlidar1.head - hlidar1.tail) :
-                             (LIDAR_FIFO_SIZE - hlidar1.tail + hlidar1.head);
+        // [修改：修复隐患一]
+        // 将 available 的计算放进死循环，动态判断是否还有剩余数据未处理
+        // 防止多次中断累积导致的 available 没刷新，从而造成数据滞后
+while (1) {
+            // 🔥 优化 1：无分支计算可用数据量，强制使用无符号运算防止隐式提升
+            uint16_t available = ((uint16_t)(hlidar1.head - hlidar1.tail)) & LIDAR_FIFO_MASK;
 
-        // 2. 从 FIFO 中提取并校验数据帧
-        while (available >= LIDAR_FRAME_LEN) {
+            // 如果积累的数据不足一帧，跳出 while(1) 循环，回到 for(;;) 顶部继续挂起等待
+            if (available < LIDAR_FRAME_LEN) break;
+
+            // 2. 校验数据帧
+            // 🔥 优化 2.1：帧头校验干掉 %
             if ((hlidar1.fifo[hlidar1.tail] & 0xF0) == 0xA0 &&
-                (hlidar1.fifo[(hlidar1.tail + 1) % LIDAR_FIFO_SIZE] & 0xF0) == 0x50) {
+                (hlidar1.fifo[(hlidar1.tail + 1) & LIDAR_FIFO_MASK] & 0xF0) == 0x50) {
 
                 uint8_t frame[LIDAR_FRAME_LEN];
                 uint8_t checksum = 0;
 
+                // 🔥 优化 2.2：极速提取 Frame 数组，干掉内部的 %
                 for (uint8_t i = 0; i < LIDAR_FRAME_LEN; i++) {
-                    frame[i] = hlidar1.fifo[(hlidar1.tail + i) % LIDAR_FIFO_SIZE];
+                    frame[i] = hlidar1.fifo[(hlidar1.tail + i) & LIDAR_FIFO_MASK];
                     if (i >= 2) checksum ^= frame[i];
                 }
 
@@ -172,18 +229,13 @@ void StartLidarRouteTask(void *argument) {
                     uint8_t is_sweep_done = Lidar_DecodeFrame_DSP(&hlidar1, frame);
 
                     if (is_sweep_done && hlidar1.current_map != NULL) {
-                        // --------------------------------------------------
-                        // 运动学跳帧决策逻辑 (视觉视神经过滤)
-                        // --------------------------------------------------
-                        float angular_z = Get_Imu_Angular_Velocity_Z(); // 获取实时角速度
+                        float angular_z = Get_Imu_Angular_Velocity_Z();
                         uint8_t should_send = 0;
 
                         if (fabs(angular_z) > TURN_THRESHOLD) {
-                            // 转弯状态：逐帧发送
                             should_send = 1;
                             straight_frame_counter = 0;
                         } else {
-                            // 直行状态：直行 10 帧发 1 帧
                             straight_frame_counter++;
                             if (straight_frame_counter >= KINEMATIC_FILTER_JUMPING_FORWARD) {
                                 should_send = 1;
@@ -192,37 +244,35 @@ void StartLidarRouteTask(void *argument) {
                         }
 
                         if (should_send) {
-                            // a. 将装满数据的当前 Map 指针投递给视觉算法处理队列
                             osStatus_t status = osMessageQueuePut(LidarQueueHandle, &hlidar1.current_map, 0, 0);
 
                             if (status == osOK) {
-                                // 投递成功，当前指针已被队列接管，置空
                                 hlidar1.current_map = NULL;
+                            } else {
+                                memset(hlidar1.current_map->distance, 0, sizeof(hlidar1.current_map->distance));
                             }
                         } else {
-                            // 如果跳帧，不清空当前指针，但在下一圈解析前应当把旧数据清除
+                            // 正常跳帧，清空旧数据
                             memset(hlidar1.current_map->distance, 0, sizeof(hlidar1.current_map->distance));
                         }
 
-                        // b. 如果当前指针为空 (已投递)，则从空闲队列取回一个新指针交还给 DMA 解析逻辑
                         if (hlidar1.current_map == NULL) {
-                            // 如果空闲队列没取到（算法任务处理太慢），先等待，避免数据被覆盖
                             if (osMessageQueueGet(LidarFreeQueueHandle, &hlidar1.current_map, NULL, pdMS_TO_TICKS(10)) != osOK) {
-                                // 处理异常：丢帧处理（在此处你也可以选择不挂起，直接丢弃新一圈数据）
+                                // 丢帧处理：拿不到空白内存
                             } else {
-                                // 拿到新 Buffer，清零准备接客
                                 memset(hlidar1.current_map->distance, 0, sizeof(hlidar1.current_map->distance));
                             }
                         }
                     } // end of is_sweep_done
 
-                    hlidar1.tail = (hlidar1.tail + LIDAR_FRAME_LEN) % LIDAR_FIFO_SIZE;
-                    available -= LIDAR_FRAME_LEN;
+                    // 🔥 优化 3.1：极速推进游标
+                    hlidar1.tail = (hlidar1.tail + LIDAR_FRAME_LEN) & LIDAR_FIFO_MASK;
                     continue;
                 }
             }
-            hlidar1.tail = (hlidar1.tail + 1) % LIDAR_FIFO_SIZE;
-            available--;
-        }
-    }
+            // 没对齐帧头或者校验失败，tail 步进1，丢弃当前错位字节
+            // 🔥 优化 3.2：错位游标步进干掉 %
+            hlidar1.tail = (hlidar1.tail + 1) & LIDAR_FIFO_MASK;
+        } // end of while(1)
+    } // end of for(;;)
 }

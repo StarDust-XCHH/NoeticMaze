@@ -82,10 +82,22 @@ const osThreadAttr_t AlgorithmBrain_attributes = {
   .stack_size = 1024 * 4,
   .priority = (osPriority_t) osPriorityBelowNormal,
 };
+/* Definitions for TaskPrint */
+osThreadId_t TaskPrintHandle;
+const osThreadAttr_t TaskPrint_attributes = {
+  .name = "TaskPrint",
+  .stack_size = 1024 * 4,
+  .priority = (osPriority_t) osPriorityLow,
+};
 /* Definitions for LidarQueue */
 osMessageQueueId_t LidarQueueHandle;
 const osMessageQueueAttr_t LidarQueue_attributes = {
   .name = "LidarQueue"
+};
+/* Definitions for PrintfMutex */
+osMutexId_t PrintfMutexHandle;
+const osMutexAttr_t PrintfMutex_attributes = {
+  .name = "PrintfMutex"
 };
 
 /* Private function prototypes -----------------------------------------------*/
@@ -98,6 +110,7 @@ extern void StartMotionTask(void *argument);
 extern void StartImuTask(void *argument);
 extern void StartLidarRouteTask(void *argument);
 extern void StartAlgorithmBrain(void *argument);
+extern void StartTaskPrint(void *argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -110,6 +123,9 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN Init */
 
   /* USER CODE END Init */
+  /* Create the mutex(es) */
+  /* creation of PrintfMutex */
+  PrintfMutexHandle = osMutexNew(&PrintfMutex_attributes);
 
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
@@ -146,6 +162,9 @@ void MX_FREERTOS_Init(void) {
 
   /* creation of AlgorithmBrain */
   AlgorithmBrainHandle = osThreadNew(StartAlgorithmBrain, NULL, &AlgorithmBrain_attributes);
+
+  /* creation of TaskPrint */
+  TaskPrintHandle = osThreadNew(StartTaskPrint, NULL, &TaskPrint_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */

@@ -25,6 +25,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdio.h>
+
+#include "lidar.h"
 
 /* USER CODE END Includes */
 
@@ -94,6 +97,13 @@ int main(void)
   MX_USART2_UART_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+
+  // lidar初始化
+  Lidar_Init(&hlidar1, &huart1);
+  Lidar_Start(&hlidar1);
+  setvbuf(stdout, NULL, _IONBF, 0);
+  printf("\r\nlidar init finish\r\n");
+
 
   /* USER CODE END 2 */
 
@@ -174,7 +184,16 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+// 拦截 UART Ex 接收事件回调 (处理 IDLE 中断和 DMA 半满/全满)
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
+{
+  // 判断是否是雷达所在的串口 (假设你的雷达接在 USART1)
+  if (huart->Instance == USART1)
+  {
+    // 调用你写好的 ISR 处理函数
+    Lidar_ParseDMA_ISR(&hlidar1, Size);
+  }
+}
 /* USER CODE END 4 */
 
 /**

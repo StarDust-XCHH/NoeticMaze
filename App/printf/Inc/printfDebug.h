@@ -1,0 +1,8 @@
+//
+// Created by lmtgy on 2026/3/27.
+//
+
+#ifndef NOETICMAZE_PRINTFDEBUG_H
+#define NOETICMAZE_PRINTFDEBUG_H
+
+#endif //NOETICMAZE_PRINTFDEBUG_H

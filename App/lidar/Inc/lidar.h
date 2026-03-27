@@ -11,6 +11,14 @@
 
 // 宏定义参数设置
 #define LIDAR_FIFO_SIZE        2048  // 适当减小原始 FIFO，因为 RTOS 响应更快，节省 RAM
+
+// --- 新增：极速 FIFO 掩码与断言 ---
+#if (LIDAR_FIFO_SIZE & (LIDAR_FIFO_SIZE - 1)) != 0
+    #error "LIDAR_FIFO_SIZE 必须是 2 的 n 次方才能使用 MASK 优化！"
+#endif
+#define LIDAR_FIFO_MASK        (LIDAR_FIFO_SIZE - 1)
+// ---------------------------------
+
 #define LIDAR_FRAME_LEN        84
 #define LIDAR_MAP_SIZE         360
 #define LIDAR_POINTS_PER_FRAME 40
@@ -21,8 +29,10 @@
 // 运动学跳帧逻辑
 #define KINEMATIC_FILTER_JUMPING_FORWARD 10
 #define KINEMATIC_FILTER_JUMPING_ROTATE 1
+#define TURN_THRESHOLD  0.2f // 角速度转弯判定阈值 (根据实际单位调整)
 
-
+#define LIDAR_MIN_RANGE    30   // 最小有效距离 30mm (避开近处结构件遮挡)
+#define LIDAR_MAX_RANGE    10000  // 最大有效距离 8000mm (根据实际需求缩短，减少远端噪点)
 // 雷达完整一圈点云结构体
 typedef struct {
     uint16_t distance[LIDAR_MAP_SIZE];
@@ -40,12 +50,16 @@ typedef struct {
     volatile uint16_t head;
     volatile uint16_t tail;
 
+    // [新增：配合 Circular DMA 使用，追踪上一次读取的位置]
+    uint16_t last_dma_pos;
+
     // 解析状态
     float32_t last_start_angle;
     uint32_t  sweep_count;
 
     // 当前正在写入的雷达地图指针
     LidarMap_t *current_map;
+
 } Lidar_HandleTypeDef;
 
 // 外部引用声明
