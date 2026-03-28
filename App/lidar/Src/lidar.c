@@ -229,36 +229,22 @@ while (1) {
                     uint8_t is_sweep_done = Lidar_DecodeFrame_DSP(&hlidar1, frame);
 
                     if (is_sweep_done && hlidar1.current_map != NULL) {
-                        float angular_z = Get_Imu_Angular_Velocity_Z();
-                        uint8_t should_send = 0;
+                        // 1. 直接尝试发送给 ICP 任务队列
+                        osStatus_t status = osMessageQueuePut(LidarQueueHandle, &hlidar1.current_map, 0, 0);
 
-                        if (fabs(angular_z) > TURN_THRESHOLD) {
-                            should_send = 1;
-                            straight_frame_counter = 0;
+                        if (status == osOK) {
+                            // 发送成功，将指针置空，稍后去申请新的内存块
+                            hlidar1.current_map = NULL;
                         } else {
-                            straight_frame_counter++;
-                            if (straight_frame_counter >= KINEMATIC_FILTER_JUMPING_FORWARD) {
-                                should_send = 1;
-                                straight_frame_counter = 0;
-                            }
-                        }
-
-                        if (should_send) {
-                            osStatus_t status = osMessageQueuePut(LidarQueueHandle, &hlidar1.current_map, 0, 0);
-
-                            if (status == osOK) {
-                                hlidar1.current_map = NULL;
-                            } else {
-                                memset(hlidar1.current_map->distance, 0, sizeof(hlidar1.current_map->distance));
-                            }
-                        } else {
-                            // 正常跳帧，清空旧数据
+                            // 如果队列满了（ICP算不过来），说明处理能力达到极限
+                            // 此时必须清空当前内存块以便下一圈重新填充
                             memset(hlidar1.current_map->distance, 0, sizeof(hlidar1.current_map->distance));
                         }
 
+                        // 2. 确保手里始终有一个可用的空白内存块
                         if (hlidar1.current_map == NULL) {
-                            if (osMessageQueueGet(LidarFreeQueueHandle, &hlidar1.current_map, NULL, pdMS_TO_TICKS(10)) != osOK) {
-                                // 丢帧处理：拿不到空白内存
+                            if (osMessageQueueGet(LidarFreeQueueHandle, &hlidar1.current_map, NULL, 0) != osOK) {
+                                // 如果内存池也干了，那只能等下一圈了
                             } else {
                                 memset(hlidar1.current_map->distance, 0, sizeof(hlidar1.current_map->distance));
                             }

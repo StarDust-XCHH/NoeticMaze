@@ -21,7 +21,7 @@ class SLAMRenderer:
         self.trajectory = deque(maxlen=2000)
         cv2.namedWindow("Bresenham SLAM Monitor", cv2.WINDOW_NORMAL)
         # 【修改点1】：因为改成了左右拼接，宽度变长了，建议修改默认窗口比例
-        cv2.resizeWindow("Bresenham SLAM Monitor", 800, 500) 
+        cv2.resizeWindow("Bresenham SLAM Monitor", 800, 500)
 
     def update(self, rx, ry, rt, hits, frees):
         if len(frees) > 0:
@@ -54,7 +54,7 @@ class SLAMRenderer:
         # 翻转地图
         flipped_map = cv2.flip(color_map, 0)
 
-# ==========================================
+        # ==========================================
         # 【修改点2】：创建独立的右侧信息面板
         # 调整了 Y 坐标行距，确保在 MAP_DIM 较小(如 250) 时也能完整显示
         # ==========================================
@@ -82,6 +82,7 @@ class SLAMRenderer:
         # 现在最后一行最大 Y 坐标为 200，在 250 的高度内安全显示
         cv2.putText(info_panel, f"Frees: {len(frees)}", (10, 200), font, scale, (0, 255, 0), thick)
 
+
         # ==========================================
         # 【修改点3】：将地图和面板横向拼接
         # ==========================================
@@ -89,6 +90,7 @@ class SLAMRenderer:
 
         cv2.imshow("Bresenham SLAM Monitor", display)
         cv2.waitKey(1)
+
 def calculate_checksum(data: bytes) -> int:
     checksum = 0
     for byte in data: checksum ^= byte
@@ -154,9 +156,10 @@ def start_proxy():
         print(f"[+] 客户端 {addr} 已连接")
         try:
             while True:
-                header_data = client.recv(18)
-                if not header_data or len(header_data) < 18: break
-                _, _, _, _, _, num_points = struct.unpack('<BBfffI', header_data)
+                header_data = client.recv(26)
+                if not header_data or len(header_data) < 26: break
+                # 【修改 2】：解包格式匹配发送端 '<BBfffffI'，用占位符忽略前面的参数，准确提取 num_points
+                _, _, _, _, _, _, _, num_points = struct.unpack('<BBfffffI', header_data)
 
                 points_size = num_points * 8
                 points_data = bytearray()

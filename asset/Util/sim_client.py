@@ -63,24 +63,25 @@ class MazeRoom:
             if dist < radius: return True
         return False
 
-    # 【核心难度提升】：加入运动畸变 (Motion Skew) 模拟
+    # 【核心重构】：加入连续运动畸变与 RPLIDAR C1 的左手系顺时针物理特性
     def get_local_lidar_scan(self, robot_pos, robot_yaw, v, w, scan_time, num_rays, max_range, drop_rate=0.08):
-        local_scan = []      
-        global_valid = []    
+        local_scan = []
+        global_valid = []
 
+        # 内部扫描角 alpha_i，按照雷达旋转方向，范围 0 ~ 2*pi
         angles = np.linspace(0, 2*np.pi, num_rays, endpoint=False)
         rx_start, ry_start = robot_pos
 
         for i, local_angle in enumerate(angles):
             # 1. 模拟随机丢点
             if np.random.rand() < drop_rate:
-                local_scan.append([0.0, 0.0]) 
+                local_scan.append([0.0, 0.0])
                 continue
 
-            # 2. 模拟运动畸变：计算这一束激光发射时的相对时间 (0 ~ scan_time)
+            # 2. 时间推演：计算这一束激光发射时的相对时间 (基于严格的一帧耗时，如100ms)
             dt_ray = scan_time * (i / num_rays)
-            
-            # 3. 计算这一瞬间小车在世界坐标系下的真实位姿 (使用圆弧模型进行更精确的积分)
+
+            # 3. 机器人位姿推演：计算当前时刻小车在世界坐标系下的真实位姿
             current_yaw = robot_yaw + w * dt_ray
             if abs(w) > 1e-4:
                 current_rx = rx_start + (v / w) * (np.sin(current_yaw) - np.sin(robot_yaw))
@@ -89,13 +90,14 @@ class MazeRoom:
                 current_rx = rx_start + v * np.cos(robot_yaw) * dt_ray
                 current_ry = ry_start + v * np.sin(robot_yaw) * dt_ray
 
-            global_angle = local_angle + current_yaw
+            # 【关键物理修正】：由于雷达是顺时针左手系，物理射线朝向应为 (Theta_i - alpha_i)
+            global_angle = current_yaw - local_angle
             dx, dy = np.cos(global_angle), np.sin(global_angle)
 
             min_dist = max_range
             hit = False
+            # 射线投射：以小车在 t_i 时刻的真实空间位置进行碰撞检测
             for p1, p2 in self.wall_segments:
-                # 注意：这里需要使用当前这根激光瞬间的 current_rx, current_ry 进行射线碰撞检测
                 denom = (p2[1] - p1[1]) * dx - (p2[0] - p1[0]) * dy
                 if abs(denom) < 1e-6: continue
                 ua = ((p2[0]-p1[0])*(current_ry-p1[1]) - (p2[1]-p1[1])*(current_rx-p1[0])) / denom
@@ -107,13 +109,14 @@ class MazeRoom:
             if hit:
                 # 硬件测距噪声
                 dist_noise = min_dist + np.random.normal(0, 0.01)
-                
-                # 4. 关键点：雷达硬件不知道车动了！它依旧按照最初的局部坐标系生成原始点云
-                lx = dist_noise * np.cos(local_angle)
-                ly = dist_noise * np.sin(local_angle)
+
+                # 4. 组装帧数据：雷达硬件按原点组装点云。
+                # 由于算法通信接收端通常假设为标准右手系，这里将顺时针的 alpha 映射回右手系的笛卡尔坐标（传入 -local_angle）
+                lx = dist_noise * np.cos(-local_angle)
+                ly = dist_noise * np.sin(-local_angle)
                 local_scan.append([lx, ly])
-                
-                # 全局画图用（展示变形后的点在全局真实位置的样子，会发现墙被“拉斜”了）
+
+                # 全局画图用（真实反映墙被“拉斜”的运动畸变效果）
                 global_valid.append([current_rx + dist_noise * dx, current_ry + dist_noise * dy])
             else:
                 local_scan.append([0.0, 0.0])
@@ -155,11 +158,16 @@ def apply_odometry_noise(v, w, dt):
     w_noisy = w * 1.15 + 0.00391974 + np.random.normal(0, 0.05)
     return v_noisy, w_noisy
 
-def send_binary_msg(sock, is_init, update_map, odom_guess, local_scan):
+# 【修改参数列表】：增加 v 和 w
+def send_binary_msg(sock, is_init, update_map, odom_guess, v, w, local_scan):
     points_flat = local_scan.flatten().astype(np.float32)
     num_points = len(local_scan)
-    header = struct.pack('<BBfffI', 1 if is_init else 0, 1 if update_map else 0,
-                         float(odom_guess[0]), float(odom_guess[1]), float(odom_guess[2]), num_points)
+    
+    # 【核心修改】：格式字符串从 '<BBfffI' 变更为 '<BBfffffI' (增加了两个 f)
+    header = struct.pack('<BBfffffI', 1 if is_init else 0, 1 if update_map else 0,
+                         float(odom_guess[0]), float(odom_guess[1]), float(odom_guess[2]),
+                         float(v), float(w), num_points)
+                         
     points_data = struct.pack(f'<{len(points_flat)}f', *points_flat)
     sock.sendall(header + points_data)
 
@@ -197,7 +205,7 @@ def run_simulation():
 
     # 初始帧，速度均为0，无畸变
     local_scan, current_scan_global = world.get_local_lidar_scan(true_pose[:2], true_pose[2], 0.0, 0.0, SCAN_TIME, FEWER_RAYS, LONGER_RANGE)
-    send_binary_msg(client, True, True, true_pose, local_scan)
+    send_binary_msg(client, True, True, true_pose, 0.0, 0.0, local_scan)
     icp_pose = recv_binary_msg(client)
 
     hist_true, hist_icp, hist_odom = [], [], []
@@ -215,15 +223,23 @@ def run_simulation():
             else:
                 angle_to_target = np.arctan2(target[1] - true_pose[1], target[0] - true_pose[0])
                 angle_err = (angle_to_target - true_pose[2] + np.pi) % (2 * np.pi) - np.pi
-                if abs(angle_err) > 0.5: v, w = 0.0, np.sign(angle_err) * 0.4
-                else: v, w = 0.3, angle_err * 1.5
+                # 速度运算逻辑
+                # 速度运算逻辑
+                # 速度运算逻辑
+
+                if abs(angle_err) > 0.5: v, w = 0.0, np.sign(angle_err) * 0.3
+                else: v, w = 0.8, angle_err * 1.0
+
+                # 速度运算逻辑
+                # 速度运算逻辑
+                # 速度运算逻辑
+
         else:
             if mission_phase == 0:
                 mission_phase = 1; global_path = astar_plan(world, icp_pose[:2], start_pose[:2]); path_idx = 0; continue
             else: mission_phase = 2; v, w = 0.0, 0.0
 
         # --- 获取带畸变的雷达数据 ---
-        # 传入当前的线速度v、角速度w。函数内会向后推演0.1s内发射每个射线的位姿
         local_scan, current_scan_global = world.get_local_lidar_scan(true_pose[:2], true_pose[2], v, w, SCAN_TIME, FEWER_RAYS, LONGER_RANGE)
 
         # 真实位姿向前推演 dt
@@ -241,7 +257,8 @@ def run_simulation():
         print(f"\r[Sim] Frame {t:04d} | Sent 360 points (Valid: {valid_count})", end="")
 
         odom_guess = icp_pose + [v_odom*np.cos(icp_pose[2])*dt, v_odom*np.sin(icp_pose[2])*dt, w_odom*dt]
-        send_binary_msg(client, False, (t % 10 == 0), odom_guess, local_scan)
+        # 在 odom_guess 和 local_scan 之间，传入当前的线速度和角速度
+        send_binary_msg(client, False, (t % 5 == 0), odom_guess, v_odom, w_odom, local_scan)
         resp = recv_binary_msg(client)
         if resp is not None: icp_pose = resp
 
