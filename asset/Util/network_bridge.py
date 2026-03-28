@@ -20,7 +20,6 @@ class SLAMRenderer:
         self.grid = np.full((MAP_DIM, MAP_DIM), 127, dtype=np.uint8)
         self.trajectory = deque(maxlen=2000)
         cv2.namedWindow("Bresenham SLAM Monitor", cv2.WINDOW_NORMAL)
-        # 【修改点1】：因为改成了左右拼接，宽度变长了，建议修改默认窗口比例
         cv2.resizeWindow("Bresenham SLAM Monitor", 800, 500)
 
     def update(self, rx, ry, rt, hits, frees):
@@ -51,43 +50,21 @@ class SLAMRenderer:
         ltx, lty = int(rgx + 8 * np.cos(rt)), int(rgy + 8 * np.sin(rt))
         cv2.line(color_map, (rgx, rgy), (ltx, lty), (0, 255, 0), 2)
 
-        # 翻转地图
         flipped_map = cv2.flip(color_map, 0)
 
-        # ==========================================
-        # 【修改点2】：创建独立的右侧信息面板
-        # 调整了 Y 坐标行距，确保在 MAP_DIM 较小(如 250) 时也能完整显示
-        # ==========================================
         info_panel = np.zeros((MAP_DIM, 160, 3), dtype=np.uint8)
+        font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1
 
-        # 字体和基础设置
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        scale = 0.45
-        thick = 1
-
-        # [ SLAM INFO ] 区域 (Y: 20 ~ 70)
         cv2.putText(info_panel, "[ SLAM INFO ]", (10, 20), font, scale, (200, 200, 200), thick)
         cv2.putText(info_panel, f"Pose X: {rx:.2f}", (10, 40), font, scale, (255, 255, 255), thick)
         cv2.putText(info_panel, f"Pose Y: {ry:.2f}", (10, 55), font, scale, (255, 255, 255), thick)
         cv2.putText(info_panel, f"Angle:  {np.degrees(rt):.1f} deg", (10, 70), font, scale, (255, 255, 255), thick)
 
-        # [ MAP CONFIG ] 区域 (Y: 100 ~ 135)
-        cv2.putText(info_panel, "[ MAP CONFIG ]", (10, 100), font, scale, (200, 200, 200), thick)
-        cv2.putText(info_panel, f"Size: 5x5 m", (10, 120), font, scale, (0, 255, 255), thick)
-        cv2.putText(info_panel, f"Res:  2 cm", (10, 135), font, scale, (0, 255, 255), thick)
-
-        # [ CLOUD DATA ] 区域 (Y: 165 ~ 200)
         cv2.putText(info_panel, "[ CLOUD DATA ]", (10, 165), font, scale, (200, 200, 200), thick)
         cv2.putText(info_panel, f"Hits:  {len(hits)}", (10, 185), font, scale, (0, 255, 0), thick)
-        # 现在最后一行最大 Y 坐标为 200，在 250 的高度内安全显示
         cv2.putText(info_panel, f"Frees: {len(frees)}", (10, 200), font, scale, (0, 255, 0), thick)
 
-
-        # ==========================================
-        # 【修改点3】：将地图和面板横向拼接
-        # ==========================================
         display = np.hstack((flipped_map, info_panel))
-
         cv2.imshow("Bresenham SLAM Monitor", display)
         cv2.waitKey(1)
 
@@ -158,7 +135,6 @@ def start_proxy():
             while True:
                 header_data = client.recv(26)
                 if not header_data or len(header_data) < 26: break
-                # 【修改 2】：解包格式匹配发送端 '<BBfffffI'，用占位符忽略前面的参数，准确提取 num_points
                 _, _, _, _, _, _, _, num_points = struct.unpack('<BBfffffI', header_data)
 
                 points_size = num_points * 8
@@ -178,7 +154,7 @@ def start_proxy():
                     if ser.in_waiting > 0:
                         parsed_frames = decoder.feed_and_decode(ser.read(ser.in_waiting))
                         for f_type, f_data in parsed_frames:
-                            if f_type == 'TIME': pass # 静默耗时，不然刷屏太快
+                            if f_type == 'TIME': pass
                             elif f_type == 'POSE': pose_back = f_data
                             elif f_type == 'MAP': renderer.update(*f_data)
 
