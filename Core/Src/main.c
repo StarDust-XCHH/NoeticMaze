@@ -20,6 +20,8 @@
 #include "main.h"
 #include "cmsis_os.h"
 #include "dma.h"
+#include "spi.h"
+#include "tim.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -29,6 +31,8 @@
 #include <stdio.h>
 
 #include "lidar.h"
+#include "MPU6500.h"
+#include "roboConifg.h"
 
 /* USER CODE END Includes */
 
@@ -50,6 +54,16 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+
+
+// imu相关
+float32_t fyaw;
+uint32_t start_time = 0;
+IMU_Yaw_Handler_t imu_handler = {
+  .drift_rate = YAW_DRIFT_RATE, // <--- 零漂速率
+};
+
+
 
 /* USER CODE END PV */
 
@@ -97,21 +111,28 @@ int main(void)
   MX_DMA_Init();
   MX_USART2_UART_Init();
   MX_USART1_UART_Init();
+  MX_SPI2_Init();
+  MX_TIM2_Init();
+  MX_TIM3_Init();
+  MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
 
-  // lidar初始化
+  // 1. 先在“安静”的环境下初始化 IMU 并加载 DMP 固件
+  while(MPU6500Init() != HAL_OK){}; //——>初始化MPU6500
+  start_time = HAL_GetTick();       //——>初始化imu零漂速率
+  setvbuf(stdout, NULL, _IONBF, 0); // 建议把这句也提前
+  printf("\r\nimu init finish\r\n");
+
+  // 2. IMU 搞定后，再放开雷达的“洪荒之力”
   Lidar_Init(&hlidar1, &huart1);
   Lidar_Start(&hlidar1);
-  setvbuf(stdout, NULL, _IONBF, 0);
   printf("\r\nlidar init finish\r\n");
 
 
   /* USER CODE END 2 */
 
   /* Init scheduler */
-  osKernelInitialize();
-
-  /* Call init function for freertos objects (in cmsis_os2.c) */
+  osKernelInitialize();  /* Call init function for freertos objects (in cmsis_os2.c) */
   MX_FREERTOS_Init();
 
   /* Start scheduler */
@@ -233,8 +254,7 @@ void Error_Handler(void)
   }
   /* USER CODE END Error_Handler_Debug */
 }
-
-#ifdef  USE_FULL_ASSERT
+#ifdef USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
   *         where the assert_param error has occurred.

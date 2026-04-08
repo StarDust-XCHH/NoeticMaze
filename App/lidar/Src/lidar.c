@@ -25,8 +25,6 @@ static const float32_t Lidar_Angle_Offsets[40] = {
    24.675f, 25.380f, 26.085f, 26.790f, 27.495f
 };
 
-// 外部陀螺仪数据获取接口 (假设你有这个接口，用于判断是否转弯)
-extern float Get_Imu_Angular_Velocity_Z(void);
 
 /* ==========================================
  * 底层驱动与中断

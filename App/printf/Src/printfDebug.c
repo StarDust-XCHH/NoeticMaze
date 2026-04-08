@@ -12,7 +12,7 @@
 #include <stdio.h>
 #include "lidar.h" // 确保包含了 LidarMap_t 和队列句柄
 #include "usart.h"
-
+#include "robot_state.h"  // <--- 新增：引入机器人状态头文件
 
 extern osMutexId_t PrintfMutexHandle; // 引入 CubeMX 生成的 Mutex 句柄
 
@@ -54,12 +54,16 @@ static uint16_t local_print_buffer[360];
 void StartTaskPrint(void *argument) {
     LidarMap_t *received_map = NULL;
     osStatus_t status;
+    // 准备一个本地变量，用于存放状态快照
+    RobotState_t current_robot_state;
+
+    // --- 新增：线程启动心跳 ---
+    printf("\r\n[DEBUG] Print Task is running, waiting for Lidar data...\r\n");
 
     for(;;) {
         // ==========================================================
         // 1. [契约第一步：阻塞借出] 等待雷达送来完整的一圈数据
         // ==========================================================
-        // 这里如果不加 osWaitForever，任务就会空转打死 CPU。
         status = osMessageQueueGet(LidarQueueHandle, &received_map, NULL, osWaitForever);
 
         if (status == osOK && received_map != NULL) {
@@ -67,46 +71,58 @@ void StartTaskPrint(void *argument) {
             // ==========================================================
             // 2. [业务逻辑：高速拷贝] 把数据拿到自己的地盘
             // ==========================================================
-            // 使用 DSP 库瞬间 (微秒级) 拷贝 720 字节到本地 buffer
             arm_copy_q15((q15_t*)received_map->distance, (q15_t*)local_print_buffer, 360);
-            uint32_t current_sweep = received_map->sweep_count; // 顺便拷贝圈数
+            uint32_t current_sweep = received_map->sweep_count;
 
             // ==========================================================
             // 3. [契约第二步：立刻归还] 核心强制约束！
             // ==========================================================
-            // 绝不能带着这个指针去执行耗时的串口发送，必须立刻还给空闲池！
             status = osMessageQueuePut(LidarFreeQueueHandle, &received_map, 0, 0);
 
             if (status != osOK) {
                 printf("\r\n[ERROR] Failed to return Lidar Memory Block!\r\n");
             }
-            received_map = NULL; // 斩断联系，防止悬垂指针
+            received_map = NULL; // 斩断联系
 
             // ==========================================================
-            // 4. [慢速后处理] 此时内存已经还给雷达了，我们可以悠哉地打印本地数据
+            // 3. 安全获取里程计快照
             // ==========================================================
-            printf("\r\n=== Lidar Queue Output [Sweep: %lu] ===\r\n", current_sweep);
+            // 调用你定义的快照接口，它内部使用了临界区保护，确保 X, Y, Yaw 是同一时刻的数据
+            Get_Robot_State_Snapshot(&current_robot_state);
 
-            for (uint16_t i = 0; i < 360; i++) {
-                if (local_print_buffer[i] > 0) {
-                    printf("[%3d:%4d] ", i, local_print_buffer[i]);
-                }
+            // 4. 执行打印 (利用你已有的 Mutex 保护的 printf)
+            printf("\r\n--- [Snapshot Sweep: %lu] ---", current_sweep);
 
-                if (i % 10 == 9) {
-                    printf("\r\n");
-                }
+            // 打印位置与速度 (保留 3 位小数，对应毫米级精度)
+            // 注意：若打印显示为 0.000，请确认是否在工程设置中开启了 printf float 支持
+            printf("\r\n[Odom] X: %.3f m | Y: %.3f m | Vel: %.2f m/s",
+                   current_robot_state.x_encoder,
+                   current_robot_state.y_encoder,
+                   current_robot_state.linear_vel_encoder);
 
-                // RTOS 友好的时间切片：每打印 20 个点让出一下 CPU 和 Mutex
-                if (i % 20 == 19) {
-                    osDelay(2);
-                }
-            }
+            // 打印姿态
+            printf("\r\n[Pose] Yaw: %.1f deg | Rate: %.1f deg/s\r\n",
+                   current_robot_state.yaw,
+                   current_robot_state.yaw_rate);
+
+            printf("-----------------------------\r\n");
+
+            // for (uint16_t i = 0; i < 360; i++) {
+            //     if (local_print_buffer[i] > 0) {
+            //         printf("[%3d:%4d] ", i, local_print_buffer[i]);
+            //     }
+            //
+            //     if (i % 10 == 9) {
+            //         printf("\r\n");
+            //     }
+            //
+            //     // RTOS 友好的时间切片：每打印 20 个点让出一下 CPU 和 Mutex
+            //     if (i % 20 == 19) {
+            //         osDelay(2);
+            //     }
+            // }
             printf("\r\n=== End of Sweep ===\r\n");
 
-            // 可选：为了防止打印疯狂刷屏，每次完整打印完后强行休息 500ms
-            // 在这 500ms 内，如果队列里来了新数据，因为我们在 osDelay，所以不会去 Get。
-            // 雷达那边如果发现积压，会根据你设计的机制自动覆盖或丢弃旧帧。
-            // osDelay(500);
         }
     }
 }
