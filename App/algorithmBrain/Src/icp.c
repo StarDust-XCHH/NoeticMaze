@@ -4,44 +4,6 @@
 
 
 
-
-/**
- * @brief 尝试更新地图并记录增量
- * @return 1: 发生变化并记录成功; 0: 无变化或缓冲区满
- */
-static inline int UpdateAndRecordMap(int x, int y, uint8_t new_state) {
-    if (x >= MAP_SIZE || y >= MAP_SIZE) return 0;
-
-    uint8_t old_state = GetMapState(x, y);
-
-#if REJECT_DYNAMIC_RELOADED_COSTMAP
-    // --- 修改开始：永久保留障碍物逻辑 ---
-    // 如果之前已经是障碍物，且现在想把它标为空闲，直接拦截！
-    if (old_state == MAP_OCCUPIED && new_state == MAP_FREE) {
-        return 0;
-    }
-    // --- 修改结束 ---
-#endif
-    // 1. 如果状态没有发生改变，直接过滤掉！(这就是节省 90% 带宽的秘诀)
-    if (old_state == new_state) return 0;
-
-    // 2. 如果状态变了，检查增量缓冲区是否还有空位
-    if (diff_cnt < MAX_MAP_DIFF) {
-        // 只有成功放进缓冲区准备发给上位机了，才真正更新 STM32 的本地地图
-        SetMapState(x, y, new_state);
-
-        diff_payload[diff_cnt * 3 + 0] = x;
-        diff_payload[diff_cnt * 3 + 1] = y;
-        diff_payload[diff_cnt * 3 + 2] = new_state;
-        diff_cnt++;
-        return 1;
-    }
-
-    // 3. 如果缓冲区满了，就不更新本地地图。
-    // 这样下一帧雷达扫过来时，发现还是旧状态，会再次触发更新机制。天然防丢包！
-    return 0;
-}
-
 /**
  * @brief 点云运动畸变补偿 (Motion Deskew) - STM32 FPU 优化版
  * @param curr_local 当前帧雷达原始点云

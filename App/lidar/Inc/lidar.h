@@ -1,6 +1,6 @@
 //
 // Created by lmtgy on 2026/3/27.
-//
+// E:\EBU6475MicroprocessorSystemsDesign\NoeticMaze\App\lidar\Inc\lidar.h
 
 #ifndef NOETICMAZE_LIDAR_H
 #define NOETICMAZE_LIDAR_H

@@ -1,6 +1,6 @@
 //
 // Created by lmtgy on 2026/3/27.
-//
+// E:\EBU6475MicroprocessorSystemsDesign\NoeticMaze\App\algorithmBrain\Src\algorithmBrain.c
 
 #include "algorithmBrain.h"
 

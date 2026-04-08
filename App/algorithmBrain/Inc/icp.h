@@ -42,6 +42,4 @@ Pose point_to_line_icp(Point* curr_local, int* curr_mask, Point* ref_global, Poi
 
 // 点云畸变修正
 void motion_deskew(Point* curr_local, int* curr_mask, float linear_v, float angular_w);
-
-static inline int UpdateAndRecordMap(int x, int y, uint8_t new_state);
 #endif
