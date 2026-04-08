@@ -28,7 +28,7 @@ extern osMutexId_t PrintfMutexHandle; // 引入 CubeMX 生成的 Mutex 句柄
 
 // --- 新增：蓝牙接收相关宏与变量 ---
 uint8_t bt_rx_raw_buf[BT_RX_BUF_SIZE]; // DMA 直接写入的原始缓冲区
-char    bt_process_buf[BT_RX_BUF_SIZE]; // 解析用的转储缓冲区
+char    bt_process_buf[BT_RX_BUF_SIZE+1]; // 解析用的转储缓冲区
 volatile uint8_t bt_frame_ready = 0;    // 帧就绪标志位
 
 // GCC 编译器的 printf 底层输出函数重定向
@@ -85,14 +85,34 @@ static void Bluetooth_Start_Receive(void) {
 /**
  * @brief 蓝牙指令解析逻辑
  */
+#include <string.h> // 需要用到 memcpy
+
+/**
+ * @brief 蓝牙指令解析逻辑 (线程安全版)
+ */
 static void Process_Bluetooth_Command(void) {
     if (!bt_frame_ready) return;
 
-    for (uint16_t i = 0; i <= (BT_RX_BUF_SIZE - sizeof(ControlPacket_t)); i++) {
-        if (bt_process_buf[i] == 0x5A && bt_process_buf[i+1] == 0x5A) {
-            ControlPacket_t *pkt = (ControlPacket_t *)&bt_process_buf[i];
+    // 1. 【核心：线程安全保护】
+    // 将全局转储区的数据快速拷贝到当前任务的栈内存中
+    // 拷贝期间屏蔽中断，防止 DMA RxEventCallback 同时写入导致数据撕裂
+    char local_buf[BT_RX_BUF_SIZE + 1];
 
-            // 1. 校验和计算
+    taskENTER_CRITICAL();
+    memcpy(local_buf, bt_process_buf, BT_RX_BUF_SIZE);
+    bt_frame_ready = 0; // 及时清零，允许中断再次置位
+    taskEXIT_CRITICAL();
+
+    // 2. 针对局部安全的 local_buf 进行解析
+    for (uint16_t i = 0; i <= (BT_RX_BUF_SIZE - sizeof(ControlPacket_t)); i++) {
+        // 查找帧头 0x5A5A
+        if (local_buf[i] == 0x5A && local_buf[i+1] == 0x5A) {
+            ControlPacket_t *pkt = (ControlPacket_t *)&local_buf[i];
+
+            // 校验包类型 (0x03 是控制指令)
+            if (pkt->type != 0x03) continue;
+
+            // 3. 校验和计算
             uint8_t sum = 0;
             uint8_t *ptr = (uint8_t *)pkt;
             for (int j = 0; j < sizeof(ControlPacket_t) - 1; j++) {
@@ -100,35 +120,37 @@ static void Process_Bluetooth_Command(void) {
             }
 
             if (sum == pkt->checksum) {
-                // 2. 执行指令
-                Motor_SetTargetAngle(pkt->angle, pkt->speed);
+                // 4. 执行指令
+                // (注意：这里调用的是上一轮我们修改好的 Motor_SetTargetVelocity)
+                // 它的内部已经有了 taskENTER_CRITICAL()，所以写入目标速度也是线程安全的
+                Motor_SetTargetVelocity(pkt->linear_vel, pkt->yaw_rate);
 
-                // 3. 构造 ACK 包回发
+                // 5. 构造 ACK 包回发
                 static AckPacket_t ack; // 静态变量防止栈溢出
                 ack.header = 0x5A5A;
                 ack.type = 0x04;
-                ack.angle = pkt->angle;
-                ack.speed = pkt->speed;
+                ack.yaw_rate = pkt->yaw_rate;
+                ack.linear_vel = pkt->linear_vel;
 
                 // 计算 ACK 的校验和
                 uint8_t ack_sum = 0;
                 uint8_t *ack_ptr = (uint8_t *)&ack;
-                for (int j = 0; j < sizeof(AckPacket_t) - 1; j++) ack_sum += ack_ptr[j];
+                for (int j = 0; j < sizeof(AckPacket_t) - 1; j++) {
+                    ack_sum += ack_ptr[j];
+                }
                 ack.checksum = ack_sum;
 
-                // 4. 安全发送：检查串口是否忙碌
-                // 如果 DMA 正在发状态包，这里可以等待或者使用阻塞方式发送(对于 10 字节的小包很快)
-                if (huart3.gState == HAL_UART_STATE_READY) {
+                // 6. 安全发送：检查串口是否忙碌
+                // 最多等 5ms，如果雷达 DMA 还没发完就放弃，防止卡死解析任务
+                if (Wait_UART_Ready(&huart3, 5) == 0) {
                     HAL_UART_Transmit_DMA(&huart3, (uint8_t*)&ack, sizeof(AckPacket_t));
-                } else {
-                    // 如果 DMA 忙，为了保证及时性，可以使用阻塞模式（非 DMA）
-                    HAL_UART_Transmit(&huart3, (uint8_t*)&ack, sizeof(AckPacket_t), 10);
                 }
+
+                // 成功解析一帧后直接退出循环
+                break;
             }
-            break;
         }
     }
-    bt_frame_ready = 0;
 }
 
 
@@ -188,9 +210,13 @@ void StartTaskPrint(void *argument) {
             state_pkg.yaw         = current_robot_state.yaw;
             state_pkg.yaw_rate    = current_robot_state.yaw_rate;
 
-            // 计算校验和：跳过 header(2) 和 type(1)，载荷长度 = 24字节
-            // (sweep_count=4, x=4, y=4, vel=4, yaw=4, rate=4)
-            state_pkg.checksum = Calc_Checksum((uint8_t*)&state_pkg + 3, 24);
+            // 【新增】填入预期角速度
+            state_pkg.target_yaw_rate = Motor_GetTargetYawRate();
+
+            // 【修改】计算校验和：跳过 header(2) 和 type(1)，载荷长度从 24 变为 28 字节
+            // (sweep_count=4, x=4, y=4, vel=4, yaw=4, rate=4, target_rate=4)
+            state_pkg.checksum = Calc_Checksum((uint8_t*)&state_pkg + 3, 28);
+
 
             // 确保上次 DMA 发送完毕，超时设置 10ms
             if (Wait_UART_Ready(&huart3, 10) == 0) {

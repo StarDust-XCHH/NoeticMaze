@@ -24,6 +24,8 @@
 // ==========================================
 #define WHEEL_DIAMETER     0.07f    // 轮子直径 0.07 米 (7cm)
 #define WHEEL_CIRCUM       (WHEEL_DIAMETER * 3.1415926f) // 轮子周长
+// 【新增】轮距 (两个驱动轮中心之间的距离)
+#define WHEEL_TRACK        0.18f    // 18cm = 0.18米
 // 【新增】定义里程计的起始位置 (单位：米)
 #define INITIAL_ODOM_X     2.5f     // 例如：起始 X 设为 1.5 米
 #define INITIAL_ODOM_Y     2.5f     // 例如：起始 Y 设为 2.0 米
@@ -34,10 +36,13 @@
 #define motor_Kp 950.0f
 #define motor_Ki 250.0f
 #define motor_Kd 0.0f
-#define angle_Kp 0.005f
-#define angle_Ki 0.0f
-#define angle_Kd 0.001f
+// 【修改】角度环 PID 参数 -> 角速度环 PID 参数
+// 注意：因为输入变成了角速度误差(deg/s)，原来的参数不适用了，建议从较小的值重新开始整定
+#define yaw_rate_Kp 0.0035f
+#define yaw_rate_Ki 0.0f
+#define yaw_rate_Kd 0.0005f
 
+#define DIED_YAW_RATE 1.0f // 角速度死区:死区优化：当角速度误差很小（如小于 1 deg/s）时，忽略不计，防止电机轻微抖动
 
 
 

@@ -15,11 +15,13 @@ static arm_pid_instance_f32 pid_right;
 
 
 
-/* --- 新增变量 --- */
-static arm_pid_instance_f32 pid_angle;   // 角度环 PID 实例
-static float target_angle = 0.0f;        // 目标角度 (0~360)
-static float target_linear_v = 0.0f;     // 【修改】基础线速度 (单位：m/s)
-static uint8_t is_angle_lock_mode = 0;   // 是否开启角度锁定模式
+
+/* --- 新增/修改变量 --- */
+static arm_pid_instance_f32 pid_yaw_rate; // 角速度环 PID 实例
+static float target_yaw_rate = 0.0f;      // 目标角速度 (deg/s)
+static float target_linear_v = 0.0f;      // 基础线速度 (m/s)
+static uint8_t is_yaw_rate_mode = 0;      // 是否开启角速度控制模式
+
 
 // 2. 状态机变量
 static Motor_State_t current_state = MOTOR_STATE_IDLE;
@@ -48,16 +50,14 @@ void Motor_PID_Init(void) {
 
 
 /**
- * @brief 角度环初始化
+ * @brief 角速度环初始化
  */
-void Motor_AnglePID_Init(void) {
-    // 【调整 Kp】因为输入是角度(0-180)，输出是速度(m/s)
-    // 假设误差 10 度时，你希望产生 0.1m/s 的修正速度，则 Kp = 0.1 / 10 = 0.01
-    pid_angle.Kp = angle_Kp; // 从小值开始测试，原先的 1.2 会导致暴走
-    pid_angle.Ki = angle_Ki;
-    pid_angle.Kd = angle_Kd; // 微调阻尼
-    arm_pid_init_f32(&pid_angle, 1);
-    is_angle_lock_mode = 0;
+void Motor_YawRatePID_Init(void) { // 替换原来的 Motor_AnglePID_Init
+    pid_yaw_rate.Kp = yaw_rate_Kp;
+    pid_yaw_rate.Ki = yaw_rate_Ki;
+    pid_yaw_rate.Kd = yaw_rate_Kd;
+    arm_pid_init_f32(&pid_yaw_rate, 1);
+    is_yaw_rate_mode = 0;
 }
 
 // ==========================================================
@@ -107,15 +107,15 @@ static void Set_Right_Motor(float duty) {
 
 
 /**
- * @brief 设置目标角度及前行速度 (由蓝牙/上位机解析函数调用)
- * @param angle 目标角度 (0-360)
- * @param v_ms 前进的目标线速度 (直接传入 m/s)
+ * @brief 设置目标线速度与角速度
+ * @param linear_v_ms 前进的目标线速度 (m/s)
+ * @param angular_v_degs 目标角速度 (deg/s)
  */
-void Motor_SetTargetAngle(float angle, float v_ms) {
+void Motor_SetTargetVelocity(float linear_v_ms, float angular_v_degs) { // 替换原来的 Motor_SetTargetAngle
     taskENTER_CRITICAL();
-    target_angle = angle;
-    target_linear_v = v_ms; // 直接存储，不再进行单位转换
-    is_angle_lock_mode = 1;
+    target_linear_v = linear_v_ms;
+    target_yaw_rate = angular_v_degs;
+    is_yaw_rate_mode = 1;
 
     if (current_state != MOTOR_STATE_ESTOP) {
         current_state = MOTOR_STATE_RUNNING;
@@ -171,10 +171,22 @@ void Task_MotorPID_Update(void) { // 改为 void，不再依赖外部传参
     float target_v_right = base_v;
 
     // 3. 角度环修正 (仅在锁定模式下)
-    if (is_angle_lock_mode) {
-        float angular_offset = _Calculate_Angle_Error_Correction(state.yaw);
-        target_v_left  = base_v - angular_offset;
-        target_v_right = base_v + angular_offset;
+    // 3. 角速度环修正 (仅在角速度模式下)
+    if (is_yaw_rate_mode) {
+        // A. 反馈：计算角速度误差带来的 PID 补偿
+        float angular_pid_offset = _Calculate_YawRate_Error_Correction(state.yaw_rate);
+
+        // B. 前馈：基于运动学的理论差速计算
+        // 先将目标角速度 (deg/s) 转化为 (rad/s)
+        float target_yaw_rate_rads = target_yaw_rate * 3.1415926f / 180.0f;
+        // 计算理论差速偏移量 (v = ω * r, 这里的 r 是轮距的一半)
+        float ff_offset = (target_yaw_rate_rads * WHEEL_TRACK) / 2.0f;
+
+        // C. 总差速 = 理论前馈 + PID反馈修正
+        float total_offset = ff_offset + angular_pid_offset;
+
+        target_v_left  = base_v - total_offset;
+        target_v_right = base_v + total_offset;
     }
 
     // 4. 反馈采集 (RPS -> m/s)
@@ -239,31 +251,24 @@ Motor_State_t Motor_GetState(void) {
 
 
 /**
- * @brief 核心：带防抖处理与抗饱和的角度环计算
+ * @brief 核心：带抗饱和的角速度环计算
  */
-/**
- * @brief 核心：带防抖处理与抗饱和的角度环计算
- */
-/**
- * @brief 核心：带防抖处理与抗饱和的角度环计算
- */
-float _Calculate_Angle_Error_Correction(float current_yaw) {
-    if (!is_angle_lock_mode) return 0.0f;
+float _Calculate_YawRate_Error_Correction(float current_yaw_rate) { // 替换原来的 _Calculate_Angle_Error_Correction
+    if (!is_yaw_rate_mode) return 0.0f;
 
-    float error = target_angle - current_yaw;
-    // 航向角过零处理
-    if (error > 180.0f)  error -= 360.0f;
-    if (error < -180.0f) error += 360.0f;
+    // 误差计算：目标角速度 - 当前角速度 (单位：deg/s)
+    float error = target_yaw_rate - current_yaw_rate;
 
-    // 保留死区优化：让 D 项平滑归零
-    if (fabsf(error) < 0.5f) {
+    // 角速度不存在 360 度过零问题，直接删除过零处理！
+
+    // 死区优化：当角速度误差很小（如小于 1 deg/s）时，忽略不计，防止电机轻微抖动
+    if (fabsf(error) < DIED_YAW_RATE) {
         error = 0.0f;
     }
 
-    float angular_output = arm_pid_f32(&pid_angle, error);
+    float angular_output = arm_pid_f32(&pid_yaw_rate, error);
 
-    // 【关键修改】：绝对不要去碰 pid_angle.state[2] ！！！
-    // 既然 Ki=0，就不存在积分器爆炸。只在最外层卡住最大补偿速度即可。
+    // 限幅保护：限制 PID 的最大干预量
     if (angular_output > MAX_ANGULAR_DELTA) {
         angular_output = MAX_ANGULAR_DELTA;
     } else if (angular_output < -MAX_ANGULAR_DELTA) {
@@ -271,5 +276,16 @@ float _Calculate_Angle_Error_Correction(float current_yaw) {
     }
 
     return angular_output;
+}
+
+float Motor_GetTargetYawRate(void) {
+    float temp;
+
+    // 进入临界区，屏蔽中断和任务调度，充当内存屏障(Memory Barrier)
+    taskENTER_CRITICAL();
+    temp = target_yaw_rate;
+    taskEXIT_CRITICAL();
+
+    return temp;
 }
 

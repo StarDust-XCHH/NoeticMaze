@@ -23,7 +23,7 @@ void StartMotionTask(void *argument)
     PWM_Init();
     Encoder_Init();
     Motor_PID_Init();
-    Motor_AnglePID_Init();
+    void Motor_YawRatePID_Init(void);
 
     // 2. 初始化绝对延时所需的时间戳变量
     TickType_t xLastWakeTime;

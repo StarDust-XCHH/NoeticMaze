@@ -74,7 +74,5 @@ void Encoder_ResetOdometry(void);
 void Task_ReportRps(void *argument);
 
 // --- 电机 PID 角度控制相关 ---
-void Motor_AnglePID_Init(void);
-float _Calculate_Angle_Error_Correction(float current_yaw);
 
 #endif /* ENCODER_H */

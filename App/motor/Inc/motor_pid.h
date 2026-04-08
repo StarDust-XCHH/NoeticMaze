@@ -17,9 +17,14 @@ void Motor_PID_Init(void);
 void Task_MotorPID_Update(); // 放入调度器，10ms执行一次
 
 // --- 速度控制接口 ---
-void Motor_SetTargetAngle(float angle, float v_ms);
-
+// 【修改】将原先的设置目标角度改为设置目标线速度和角速度
+// linear_v_ms: 目标线速度 (m/s)
+// angular_v_degs: 目标角速度 (deg/s)
+void Motor_SetTargetVelocity(float linear_v_ms, float angular_v_degs);
+float _Calculate_YawRate_Error_Correction(float current_yaw_rate);
 void Motor_Resume(void); // 从停止状态恢复运行
+float Motor_GetTargetYawRate(void);
+
 
 // --- 停车控制接口 ---
 void Motor_NormalStop(void);    // 平滑停车：PID控制收敛到0后关闭输出
