@@ -201,7 +201,7 @@ void StartLidarRouteTask(void *argument) {
         // [修改：修复隐患一]
         // 将 available 的计算放进死循环，动态判断是否还有剩余数据未处理
         // 防止多次中断累积导致的 available 没刷新，从而造成数据滞后
-while (1) {
+    while (1) {
             // 🔥 优化 1：无分支计算可用数据量，强制使用无符号运算防止隐式提升
             uint16_t available = ((uint16_t)(hlidar1.head - hlidar1.tail)) & LIDAR_FIFO_MASK;
 

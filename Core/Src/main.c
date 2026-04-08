@@ -25,6 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <icp.h>
 #include <stdio.h>
 
 #include "lidar.h"

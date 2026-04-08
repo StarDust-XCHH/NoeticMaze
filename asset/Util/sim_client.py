@@ -138,24 +138,24 @@ class DynamicMap:
         return False
 
 def astar_plan(dynamic_map, start, goal):
-    """基于动态地图进行规划，未知区域由于为 0 会被直接规划连线"""
+    """基于动态地图进行规划，引入安全膨胀层"""
     grid_res = dynamic_map.res
     def h(a, b): return np.linalg.norm(np.array(a) - np.array(b))
 
-    # 【修复】：使用 np.round 替代直接 int 截断，将最大初始误差从 0.1m 缩小到 0.05m
     start_grid = tuple(np.round(np.array(start) / grid_res).astype(int))
     goal_grid = tuple(np.round(np.array(goal) / grid_res).astype(int))
-    
-    start_grid = tuple((np.array(start) / grid_res).astype(int))
-    goal_grid = tuple((np.array(goal) / grid_res).astype(int))
 
     open_list = [(0, start_grid)]
     came_from = {}
     g_score = {start_grid: 0}
 
+    # 定义机器人的物理半径和期望的安全半径
+    physical_radius = 0.22  # 绝对不能碰的死线
+    safe_radius = 0.38      # 期望保持的安全距离（膨胀层）
+
     while open_list:
         _, current = heapq.heappop(open_list)
-        # 到达目标附近即可
+        
         if h(current, goal_grid) < 1.5: 
             path = []
             while current in came_from:
@@ -168,17 +168,29 @@ def astar_plan(dynamic_map, start, goal):
             if not (0 <= neighbor[0] < dynamic_map.grid_size and 0 <= neighbor[1] < dynamic_map.grid_size): 
                 continue
             
-            # 使用构建的地图进行碰撞检测
-            if dynamic_map.check_collision(np.array(neighbor) * grid_res, radius=0.22): 
+            neighbor_pos = np.array(neighbor) * grid_res
+
+            # 1. 物理碰撞检测 (硬约束：绝对不能走)
+            if dynamic_map.check_collision(neighbor_pos, radius=physical_radius): 
                 continue
 
-            tg = g_score[current] + h(current, neighbor)
+            # 2. 安全膨胀层惩罚 (软约束：尽量不要走)
+            # 如果进入了安全半径以内，给予额外的代价惩罚
+            penalty = 0.0
+            if dynamic_map.check_collision(neighbor_pos, radius=safe_radius):
+                penalty = 2.5  # 惩罚系数：这个值越大，路线越会往道路中心靠拢
+
+            # 计算移动代价（对角线移动代价更高）
+            move_cost = np.sqrt(dx**2 + dy**2)
+            
+            # 总代价 = 历史代价 + 移动距离代价 + 靠近墙壁的惩罚
+            tg = g_score[current] + move_cost + penalty
+            
             if neighbor not in g_score or tg < g_score[neighbor]:
                 came_from[neighbor] = current
                 g_score[neighbor] = tg
                 heapq.heappush(open_list, (tg + h(neighbor, goal_grid), neighbor))
     return None
-
 
 def bresenham_line_check(dynamic_map, p1, p2, radius=0.22, ignore_start_dist=0.0): 
     """射线检测：判断两点之间的连线是否碰到障碍物"""
@@ -205,8 +217,8 @@ def bresenham_line_check(dynamic_map, p1, p2, radius=0.22, ignore_start_dist=0.0
             
     return False
 
-def smooth_path(dynamic_map, path):
-    """极限取直：砍掉路径中多余的节点，保留最长直线"""
+def smooth_path(dynamic_map, path, safe_smoothing_radius=0.35):
+    """带安全裕度的极限取直：防止切角过弯太靠墙"""
     if not path or len(path) < 3: 
         return path
         
@@ -214,9 +226,10 @@ def smooth_path(dynamic_map, path):
     curr_idx = 0
     while curr_idx < len(path) - 1:
         furthest_visible = curr_idx + 1
-        # 从最后面的节点开始往前倒推，找第一个能直线看得到的点
         for i in range(len(path) - 1, curr_idx, -1):
-            if not bresenham_line_check(dynamic_map, path[curr_idx], path[i]):
+            # 【核心修改】：在这里传入 safe_smoothing_radius，而不是默认的物理半径
+            # 这意味着：如果拉直后会擦着墙壁走，我们就不允许拉直，迫使机器人多走一个控制节点
+            if not bresenham_line_check(dynamic_map, path[curr_idx], path[i], radius=safe_smoothing_radius):
                 furthest_visible = i
                 break
         smoothed.append(path[furthest_visible])
@@ -311,7 +324,7 @@ def run_simulation():
 
         # --- 2. 与 C/MCU 层通信获取最新的 ICP 位姿 ---
         odom_guess = icp_pose + [v_odom*np.cos(icp_pose[2])*dt, v_odom*np.sin(icp_pose[2])*dt, w_odom*dt]
-        send_binary_msg(client, False, (t % 5 == 0), odom_guess, v_odom, w_odom, local_scan)
+        send_binary_msg(client, False, False, odom_guess, v_odom, w_odom, local_scan)
         resp = recv_binary_msg(client)
         if resp is not None: icp_pose = resp
 
