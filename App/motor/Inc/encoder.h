@@ -75,7 +75,6 @@ void Task_ReportRps(void *argument);
 
 // --- 电机 PID 角度控制相关 ---
 void Motor_AnglePID_Init(void);
-void Motor_SetTargetAngle(float angle, float linear_rps);
 float _Calculate_Angle_Error_Correction(float current_yaw);
 
 #endif /* ENCODER_H */

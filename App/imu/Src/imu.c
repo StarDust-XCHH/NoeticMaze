@@ -48,10 +48,11 @@ void StartImuTask(void *argument)
         if (my_imu_handler.is_calibrated) {
             // API 内部已经封装了 taskENTER_CRITICAL，这里直接调用即可
             Update_Robot_IMU_State(my_imu_handler.compensated_yaw,
-                                   my_imu_handler.gyro_z);
+                                   my_imu_handler.gyro_z,
+                                   my_imu_handler.is_calibrated);
         } else {
             // 没校准完时，偏航角传 0，角速度正常传
-            Update_Robot_IMU_State(0.0f, my_imu_handler.gyro_z);
+            Update_Robot_IMU_State(0.0f, my_imu_handler.gyro_z,my_imu_handler.is_calibrated);
         }
 
         // ==========================================

@@ -30,5 +30,25 @@ typedef struct {
     uint8_t  checksum;     // 校验和
 } LidarData_Packet_t;
 
+
+// 定义指令结构体（确保字节对齐）
+typedef struct {
+    uint16_t header;   // 0x5A5A
+    uint8_t  type;     // 0x03
+    float    angle;
+    float    speed;
+    uint8_t  checksum;
+} ControlPacket_t;
+
+
+// 回显包结构：原样返还角度和速度，用于验证
+typedef struct {
+    uint16_t header;   // 0x5A5A
+    uint8_t  type;     // 0x04 (ACK 类型)
+    float    angle;
+    float    speed;
+    uint8_t  checksum;
+} AckPacket_t;
+
 #pragma pack(pop)
 #endif //NOETICMAZE_BT_PROTOCOL_H

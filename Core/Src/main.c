@@ -32,6 +32,7 @@
 
 #include "lidar.h"
 #include "MPU6500.h"
+#include "printfDebug.h"
 #include "roboConifg.h"
 
 /* USER CODE END Includes */
@@ -130,6 +131,14 @@ int main(void)
   printf("\r\nlidar init finish\r\n");
 
 
+  // === 新增：启动蓝牙串口接收 ===
+  // 必须调用这一次，硬件才会开始往 bt_rx_raw_buf 搬运数据
+  extern uint8_t bt_rx_raw_buf[]; // 确保主程序能找到这个缓冲区
+  HAL_UARTEx_ReceiveToIdle_DMA(&huart3, bt_rx_raw_buf, BT_RX_BUF_SIZE);
+  // 禁用 DMA 半传输中断（防止大包时触发两次，影响逻辑）
+  __HAL_DMA_DISABLE_IT(huart3.hdmarx, DMA_IT_HT);
+
+
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -208,18 +217,42 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 // 拦截 UART Ex 接收事件回调 (处理 IDLE 中断和 DMA 半满/全满)
+/**
+ * @brief 工程唯一的串口 RxEvent 回调总入口
+ * @param Size: 当前收到的字节数
+ */
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 {
-  // 判断是否是雷达所在的串口 (假设你的雷达接在 USART1)
+  // --- 1. 处理雷达数据 (USART1) ---
   if (huart->Instance == USART1)
   {
-    // 调用你写好的 ISR 处理函数
+    // 调用雷达驱动的解析函数
     Lidar_ParseDMA_ISR(&hlidar1, Size);
+    // 注意：通常雷达驱动内部会自行重启 DMA，如果没有，这里需要加上
+  }
+
+  // --- 2. 处理蓝牙控制指令 (USART3) ---
+  else if (huart->Instance == USART3)
+  {
+    // 只要进到这里，说明硬件层收到了 IDLE 信号或 DMA 满了
+    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+
+    if (Size > 0)
+    {
+      // 使用 Size 而不是硬编码 12，因为蓝牙指令可能因为各种原因分两段到
+      memcpy(bt_process_buf, (char*)bt_rx_raw_buf, Size);
+      bt_process_buf[Size] = '\0';
+      bt_frame_ready = 1;
+    }
+
+    // 重新开启（针对 Normal 模式或防止溢出后死锁）
+    HAL_UARTEx_ReceiveToIdle_DMA(&huart3, bt_rx_raw_buf, BT_RX_BUF_SIZE);
+    __HAL_DMA_DISABLE_IT(huart3.hdmarx, DMA_IT_HT);
   }
 }
 /* USER CODE END 4 */
 
-/**
+ /**
   * @brief  Period elapsed callback in non blocking mode
   * @note   This function is called  when TIM6 interrupt took place, inside
   * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment

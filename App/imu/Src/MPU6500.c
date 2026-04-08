@@ -3,6 +3,7 @@
 #include <math.h>
 #include <MPU6500.h>
 
+#include "robot_state.h"
 #include "spi.h"
 #include "dsp/fast_math_functions.h"
 const signed char gyro_orientation[9] = {1, 0, 0,
@@ -51,6 +52,13 @@ void Task_IMU_Update(void *arg) {
 	IMU_Yaw_Handler_t *handler = (IMU_Yaw_Handler_t *)arg;
 	if (handler != NULL) {
 		IMU_Update(handler);
+        
+		// 【关键逻辑】将校准状态和数据同步到全局中枢
+		Update_Robot_IMU_State(
+			handler->compensated_yaw,
+			handler->gyro_z,
+			handler->is_calibrated  // 这里的 1 会让 PID 任务解锁
+		);
 	}
 }
 

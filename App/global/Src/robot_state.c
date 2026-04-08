@@ -25,10 +25,11 @@ void Get_Robot_State_Snapshot(RobotState_t *out_state) {
 // ==========================================
 // 2. 分类更新 (防止不同任务互相覆盖数据)
 // ==========================================
-void Update_Robot_IMU_State(float new_yaw, float new_yaw_rate) {
+void Update_Robot_IMU_State(float new_yaw, float new_yaw_rate, uint8_t ready) {
     taskENTER_CRITICAL();
     global_robot_state.yaw = new_yaw;
     global_robot_state.yaw_rate = new_yaw_rate;
+    global_robot_state.imu_ready = ready; // 同步状态
     taskEXIT_CRITICAL();
 }
 

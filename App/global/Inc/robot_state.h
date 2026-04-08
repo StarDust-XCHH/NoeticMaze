@@ -12,6 +12,7 @@ typedef struct {
     // --- 姿态与角速度 (通常由 IMU 任务更新) ---
     float yaw;          // 当前偏航角 (0-360)
     float yaw_rate;     // 当前角速度 (Z轴)
+    uint8_t imu_ready;  // <--- 新增：IMU 是否校准完成标志
 
     // --- 位置与线速度 (通常由 里程计/编码器 任务更新) ---
     float x_encoder;            // 全局 X 坐标 (米)
@@ -34,7 +35,7 @@ void Get_Robot_State_Snapshot(RobotState_t *out_state);
 /**
  * @brief 仅更新 IMU 相关的状态 (供 IMU 解析任务调用)
  */
-void Update_Robot_IMU_State(float new_yaw, float new_yaw_rate);
+void Update_Robot_IMU_State(float new_yaw, float new_yaw_rate, uint8_t ready);
 
 /**
  * @brief 仅更新里程计相关的状态 (供 100Hz 运动控制任务调用)

@@ -157,15 +157,29 @@ void Task_MotorPID_Update(void *param) {
     // ==========================================
     // 0. 新增：IMU 校准状态拦截
     // ==========================================
-    if (param != NULL) {
-        uint8_t *is_calibrated = (uint8_t *)param;
-        if (*is_calibrated == 0) {
-            // IMU 尚未校准完成：强制保持停止状态，跳过所有 PID 运算
-            Set_Left_Motor(0.0f);
-            Set_Right_Motor(0.0f);
-            return; // 直接退出，不进行后续状态机判断和误差计算
-        }
+
+
+    // 1. 获取全局状态快照 (安全读取：内部已含临界区保护)
+    RobotState_t state;
+    Get_Robot_State_Snapshot(&state);
+
+    // 2. 检查 IMU 是否就绪 (使用快照中的 imu_ready)
+    if (state.imu_ready == 0) {
+        // IMU 尚未校准完成：强制保持停止状态
+        Set_Left_Motor(0.0f);
+        Set_Right_Motor(0.0f);
+        return;
     }
+
+    // --- 【新增测试逻辑】 ---
+    // 一旦校准完成，且当前处于 IDLE 状态，则自动触发 90 度转弯测试
+    static uint8_t auto_test_done = 0;
+    if (auto_test_done == 0) {
+        // 调用接口：内部会自动切换 current_state 到 MOTOR_STATE_RUNNING
+        Motor_SetTargetAngle(90.0f, 0.0f);
+        auto_test_done = 1; // 确保只触发一次
+    }
+    // -----------------------
 
     // 1. 紧急停车 或 彻底待机状态：直接输出 0，不进行 PID 运算
     if (current_state == MOTOR_STATE_ESTOP || current_state == MOTOR_STATE_IDLE) {
