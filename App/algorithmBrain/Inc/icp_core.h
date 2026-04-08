@@ -1,5 +1,10 @@
-#ifndef ICP_H
-#define ICP_H
+//
+// Created by lmtgy on 2026/4/9.
+//
+
+#ifndef NOETICMAZE_ICP_CORE_H
+#define NOETICMAZE_ICP_CORE_H
+
 
 #include <stdint.h>
 
@@ -12,7 +17,6 @@
 
 /* 新增：ICP 参考帧更新频率 (每隔几帧作为一次 KeyFrame) */
 // 如果不进行运动检测，建议为5，运动检测建议直行10，转弯2（待定）
-#define ICP_REF_UPDATE_FRAMES 5
 
 
 #pragma pack(push, 1)
@@ -42,4 +46,5 @@ Pose point_to_line_icp(Point* curr_local, int* curr_mask, Point* ref_global, Poi
 
 // 点云畸变修正
 void motion_deskew(Point* curr_local, int* curr_mask, float linear_v, float angular_w);
-#endif
+
+#endif //NOETICMAZE_ICP_CORE_H
