@@ -137,6 +137,7 @@ int main(void)
   HAL_UARTEx_ReceiveToIdle_DMA(&huart3, bt_rx_raw_buf, BT_RX_BUF_SIZE);
   // 禁用 DMA 半传输中断（防止大包时触发两次，影响逻辑）
   __HAL_DMA_DISABLE_IT(huart3.hdmarx, DMA_IT_HT);
+  printf("Bluetooth Rx Started\r\n");
 
 
   /* USER CODE END 2 */
