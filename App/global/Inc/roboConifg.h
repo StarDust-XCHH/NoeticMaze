@@ -34,9 +34,9 @@
 #define motor_Kp 950.0f
 #define motor_Ki 250.0f
 #define motor_Kd 0.0f
-#define angle_Kp 0.015f
+#define angle_Kp 0.005f
 #define angle_Ki 0.0f
-#define angle_Kd 0.01f
+#define angle_Kd 0.001f
 
 
 
