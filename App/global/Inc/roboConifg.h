@@ -27,6 +27,18 @@
 // 【新增】定义里程计的起始位置 (单位：米)
 #define INITIAL_ODOM_X     2.5f     // 例如：起始 X 设为 1.5 米
 #define INITIAL_ODOM_Y     2.5f     // 例如：起始 Y 设为 2.0 米
+// 速度限制 (安全第一)
+#define MAX_LINEAR_VEL     0.8f                 // 最大线速度限制 0.8m/s
+#define MAX_ANGULAR_DELTA  0.15f                // 转向引起的差速补偿最大值 0.15m/s
+#define STOP_DEADBAND 0.01f   // 停车死区：当转速小于此值(圈/秒)时认为已停稳
+#define motor_Kp 950.0f
+#define motor_Ki 250.0f
+#define motor_Kd 0.0f
+#define angle_Kp 0.015f
+#define angle_Ki 0.0f
+#define angle_Kd 0.01f
+
+
 
 
 // 已经于App\motor\Src\encoder.c中执行DWT_CYCCNT = 0;

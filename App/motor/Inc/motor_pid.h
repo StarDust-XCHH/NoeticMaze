@@ -14,11 +14,10 @@ typedef enum {
 
 // --- 初始化与定时任务 ---
 void Motor_PID_Init(void);
-void Task_MotorPID_Update(void *param); // 放入调度器，10ms执行一次
+void Task_MotorPID_Update(); // 放入调度器，10ms执行一次
 
 // --- 速度控制接口 ---
-void Motor_SetTargetRPS(float left_rps, float right_rps);
-void Motor_SetTargetAngle(float angle, float linear_rps);
+void Motor_SetTargetAngle(float angle, float v_ms);
 
 void Motor_Resume(void); // 从停止状态恢复运行
 

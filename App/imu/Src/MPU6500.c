@@ -52,7 +52,7 @@ void Task_IMU_Update(void *arg) {
 	IMU_Yaw_Handler_t *handler = (IMU_Yaw_Handler_t *)arg;
 	if (handler != NULL) {
 		IMU_Update(handler);
-        
+
 		// 【关键逻辑】将校准状态和数据同步到全局中枢
 		Update_Robot_IMU_State(
 			handler->compensated_yaw,

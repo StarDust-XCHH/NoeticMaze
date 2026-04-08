@@ -76,18 +76,7 @@ void Task_MotorSweep(void *param)
     Set_Motor_Speed(MOTOR_RIGHT, current_speed);
 }
 
-/**
- * @brief 控制底盘移动
- * @param linear 线速度 (-1000 ~ 1000)
- * @param angular 角速度 (-1000 ~ 1000，正数右转，负数左转)
- */
-void Chassis_Drive(int16_t linear, int16_t angular) {
-    int16_t left_speed = linear + angular;
-    int16_t right_speed = linear - angular;
 
-    Set_Motor_Speed(MOTOR_LEFT, left_speed);
-    Set_Motor_Speed(MOTOR_RIGHT, right_speed);
-}
 
 
 // PWM初始化

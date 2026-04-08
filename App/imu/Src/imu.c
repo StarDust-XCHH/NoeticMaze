@@ -26,7 +26,7 @@ void StartImuTask(void *argument)
 
     // 2. 准备绝对延时
     TickType_t xLastWakeTime;
-    const TickType_t xFrequency = pdMS_TO_TICKS(5); // 严格 5ms = 200Hz
+    const TickType_t xFrequency = pdMS_TO_TICKS(2); // 严格 5ms = 500Hz
 
     xLastWakeTime = xTaskGetTickCount();
 
