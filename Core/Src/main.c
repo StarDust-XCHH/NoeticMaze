@@ -115,6 +115,7 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM3_Init();
   MX_TIM4_Init();
+  MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
 
   // 1. 先在“安静”的环境下初始化 IMU 并加载 DMP 固件
