@@ -4,6 +4,7 @@
 #include "printfDebug.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -14,16 +15,25 @@
 #include "robot_state.h"
 #include "bt_protocol.h"
 #include "motor_pid.h"
+#include "roboConifg.h"
+
+
 
 // 引入外部句柄
+extern osMutexId_t PrintfMutexHandle;
+
+
+#if ENABLE_LIDAR_BT_TX
 extern osMessageQueueId_t LidarQueueHandle;
 extern osMessageQueueId_t LidarFreeQueueHandle;
+#endif
 
-// 定义静态的发送包，放在全局数据区，防止爆栈，同时也保证 DMA 传输期间内存的绝对稳定
+// 定义静态的发送包，放在全局数据区
 static RobotState_Packet_t state_pkg;
-static LidarData_Packet_t  lidar_pkg;
 
-extern osMutexId_t PrintfMutexHandle; // 引入 CubeMX 生成的 Mutex 句柄
+#if ENABLE_LIDAR_BT_TX
+static LidarData_Packet_t  lidar_pkg;
+#endif
 
 
 // --- 新增：蓝牙接收相关宏与变量 ---
@@ -32,15 +42,10 @@ char    bt_process_buf[BT_RX_BUF_SIZE+1]; // 解析用的转储缓冲区
 volatile uint8_t bt_frame_ready = 0;    // 帧就绪标志位
 
 // GCC 编译器的 printf 底层输出函数重定向
-
 int _write(int file, char *ptr, int len) {
-
     (void)file;
     return 0 ;
-
 }
-
-
 
 /**
  * @brief 计算单字节校验和
@@ -69,23 +74,13 @@ static int Wait_UART_Ready(UART_HandleTypeDef *huart, uint32_t timeout_ms) {
     return 0;
 }
 
-
 /**
  * @brief 启动蓝牙 DMA 接收 (建议在任务循环开始前调用一次)
  */
 static void Bluetooth_Start_Receive(void) {
-    // 使用 HAL_UARTEx_ReceiveToIdle_DMA 可以在收到 IDLE 信号时自动触发回调
-    // 这是 2026 年 STM32 开发中最推荐的变长数据接收方式
     HAL_UARTEx_ReceiveToIdle_DMA(&huart3, bt_rx_raw_buf, BT_RX_BUF_SIZE);
-    // 关闭 DMA 半传输中断，防止干扰
     __HAL_DMA_DISABLE_IT(huart3.hdmarx, DMA_IT_HT);
 }
-
-
-/**
- * @brief 蓝牙指令解析逻辑
- */
-#include <string.h> // 需要用到 memcpy
 
 /**
  * @brief 蓝牙指令解析逻辑 (线程安全版)
@@ -93,26 +88,19 @@ static void Bluetooth_Start_Receive(void) {
 static void Process_Bluetooth_Command(void) {
     if (!bt_frame_ready) return;
 
-    // 1. 【核心：线程安全保护】
-    // 将全局转储区的数据快速拷贝到当前任务的栈内存中
-    // 拷贝期间屏蔽中断，防止 DMA RxEventCallback 同时写入导致数据撕裂
     char local_buf[BT_RX_BUF_SIZE + 1];
 
     taskENTER_CRITICAL();
     memcpy(local_buf, bt_process_buf, BT_RX_BUF_SIZE);
-    bt_frame_ready = 0; // 及时清零，允许中断再次置位
+    bt_frame_ready = 0;
     taskEXIT_CRITICAL();
 
-    // 2. 针对局部安全的 local_buf 进行解析
     for (uint16_t i = 0; i <= (BT_RX_BUF_SIZE - sizeof(ControlPacket_t)); i++) {
-        // 查找帧头 0x5A5A
         if (local_buf[i] == 0x5A && local_buf[i+1] == 0x5A) {
             ControlPacket_t *pkt = (ControlPacket_t *)&local_buf[i];
 
-            // 校验包类型 (0x03 是控制指令)
             if (pkt->type != 0x03) continue;
 
-            // 3. 校验和计算
             uint8_t sum = 0;
             uint8_t *ptr = (uint8_t *)pkt;
             for (int j = 0; j < sizeof(ControlPacket_t) - 1; j++) {
@@ -120,19 +108,14 @@ static void Process_Bluetooth_Command(void) {
             }
 
             if (sum == pkt->checksum) {
-                // 4. 执行指令
-                // (注意：这里调用的是上一轮我们修改好的 Motor_SetTargetVelocity)
-                // 它的内部已经有了 taskENTER_CRITICAL()，所以写入目标速度也是线程安全的
                 Motor_SetTargetVelocity(pkt->linear_vel, pkt->yaw_rate);
 
-                // 5. 构造 ACK 包回发
-                static AckPacket_t ack; // 静态变量防止栈溢出
+                static AckPacket_t ack;
                 ack.header = 0x5A5A;
                 ack.type = 0x04;
                 ack.yaw_rate = pkt->yaw_rate;
                 ack.linear_vel = pkt->linear_vel;
 
-                // 计算 ACK 的校验和
                 uint8_t ack_sum = 0;
                 uint8_t *ack_ptr = (uint8_t *)&ack;
                 for (int j = 0; j < sizeof(AckPacket_t) - 1; j++) {
@@ -140,100 +123,96 @@ static void Process_Bluetooth_Command(void) {
                 }
                 ack.checksum = ack_sum;
 
-                // 6. 安全发送：检查串口是否忙碌
-                // 最多等 5ms，如果雷达 DMA 还没发完就放弃，防止卡死解析任务
                 if (Wait_UART_Ready(&huart3, 5) == 0) {
                     HAL_UART_Transmit_DMA(&huart3, (uint8_t*)&ack, sizeof(AckPacket_t));
                 }
-
-                // 成功解析一帧后直接退出循环
                 break;
             }
         }
     }
 }
 
-
 /**
- * @brief 蓝牙遥测任务 (替代原有的 Print 任务)
+ * @brief 蓝牙遥测与控制任务
  */
 void StartTaskPrint(void *argument) {
-    LidarMap_t *received_map = NULL;
     RobotState_t current_robot_state;
-    osStatus_t status;
 
-    // 预填固定包头信息
+    // 预填状态包固定包头
     state_pkg.header = 0x55AA;
     state_pkg.type   = 0x01;
 
+#if ENABLE_LIDAR_BT_TX
+    LidarMap_t *received_map = NULL;
+    osStatus_t status;
+
+    // 预填雷达包固定包头
     lidar_pkg.header = 0x55AA;
     lidar_pkg.type   = 0x02;
+#endif
 
     for(;;) {
-
-        // ==========================================================
-        // 1. [新增] 检查并处理蓝牙指令
-        // ==========================================================
+        // 1. 处理控制指令下发
         Process_Bluetooth_Command();
 
+#if ENABLE_LIDAR_BT_TX
         // ==========================================================
-        // 1. [契约获取] 阻塞等待雷达一圈数据就绪
+        // 【模式一：启用雷达发送】基于雷达频率进行阻塞发送
         // ==========================================================
-        // 将等待时间缩短，比如 5ms，这样即使没雷达数据，指令也能被响应
         status = osMessageQueueGet(LidarQueueHandle, &received_map, NULL, pdMS_TO_TICKS(5));
         if (status == osOK && received_map != NULL) {
 
-            // ==========================================================
-            // 2. [数据拷贝] 提取雷达数据与圈数
-            // ==========================================================
             arm_copy_q15((q15_t*)received_map->distance, (q15_t*)lidar_pkg.distance, 360);
             uint32_t current_sweep = received_map->sweep_count;
 
-            // ==========================================================
-            // 3. [契约归还] 立即释放内存池，不阻碍雷达底层继续接收
-            // ==========================================================
             osMessageQueuePut(LidarFreeQueueHandle, &received_map, 0, 0);
             received_map = NULL;
 
-            // ==========================================================
-            // 4. [状态快照] 获取与当前雷达数据时间同步的 IMU/Odom 状态
-            // ==========================================================
             Get_Robot_State_Snapshot(&current_robot_state);
 
-            // ==========================================================
-            // 5. [打包发送 A：机器人状态包]
-            // ==========================================================
-            state_pkg.sweep_count = current_sweep; // 用圈数作为时间戳同步对齐
+            // 打包并发送状态
+            state_pkg.sweep_count = current_sweep;
             state_pkg.x           = current_robot_state.x_encoder;
             state_pkg.y           = current_robot_state.y_encoder;
             state_pkg.linear_vel  = current_robot_state.linear_vel_encoder;
             state_pkg.yaw         = current_robot_state.yaw;
             state_pkg.yaw_rate    = current_robot_state.yaw_rate;
-
-            // 【新增】填入预期角速度
             state_pkg.target_yaw_rate = Motor_GetTargetYawRate();
 
-            // 【修改】计算校验和：跳过 header(2) 和 type(1)，载荷长度从 24 变为 28 字节
-            // (sweep_count=4, x=4, y=4, vel=4, yaw=4, rate=4, target_rate=4)
             state_pkg.checksum = Calc_Checksum((uint8_t*)&state_pkg + 3, 28);
 
-
-            // 确保上次 DMA 发送完毕，超时设置 10ms
             if (Wait_UART_Ready(&huart3, 10) == 0) {
                 HAL_UART_Transmit_DMA(&huart3, (uint8_t*)&state_pkg, sizeof(RobotState_Packet_t));
             }
 
-            // ==========================================================
-            // 6. [打包发送 B：雷达数据包]
-            // ==========================================================
-            // 计算雷达校验和：仅计算 720 字节的载荷
+            // 打包并发送雷达
             lidar_pkg.checksum = Calc_Checksum((uint8_t*)lidar_pkg.distance, 720);
 
-            // 必须再次等待前一个状态包的 DMA 传输完成！
-            // 状态包约 28 字节，460800 波特率下需要约 0.6ms
             if (Wait_UART_Ready(&huart3, 20) == 0) {
                 HAL_UART_Transmit_DMA(&huart3, (uint8_t*)&lidar_pkg, sizeof(LidarData_Packet_t));
             }
         }
+#else
+        // ==========================================================
+        // 【模式二：禁用雷达发送】按 50Hz 独立时序发送状态包
+        // ==========================================================
+        Get_Robot_State_Snapshot(&current_robot_state);
+
+        state_pkg.sweep_count = osKernelGetTickCount(); // 替用系统 Tick 时间戳
+        state_pkg.x           = current_robot_state.x_encoder;
+        state_pkg.y           = current_robot_state.y_encoder;
+        state_pkg.linear_vel  = current_robot_state.linear_vel_encoder;
+        state_pkg.yaw         = current_robot_state.yaw;
+        state_pkg.yaw_rate    = current_robot_state.yaw_rate;
+        state_pkg.target_yaw_rate = Motor_GetTargetYawRate();
+
+        state_pkg.checksum = Calc_Checksum((uint8_t*)&state_pkg + 3, 28);
+
+        if (Wait_UART_Ready(&huart3, 5) == 0) {
+            HAL_UART_Transmit_DMA(&huart3, (uint8_t*)&state_pkg, sizeof(RobotState_Packet_t));
+        }
+
+        osDelay(20); // 释放 CPU，维持 50Hz 控制和遥测频率
+#endif
     }
 }

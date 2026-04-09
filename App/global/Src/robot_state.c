@@ -4,11 +4,16 @@
 
 #include "robot_state.h"
 #include "FreeRTOS.h"
+#include "roboConifg.h"
 #include "task.h"
 
 // static 关键字将变量作用域限制在本文件内，彻底杜绝外部 extern 绕过保护
-static RobotState_t global_robot_state = {0};
-
+// static 关键字将变量作用域限制在本文件内，彻底杜绝外部 extern 绕过保护
+// 使用 C99 语法，只给 x_encoder 和 y_encoder 赋初值，结构体中未指定的其他成员会自动初始化为 0
+static RobotState_t global_robot_state = {
+    .x_encoder = INITIAL_ODOM_X,
+    .y_encoder = INITIAL_ODOM_Y
+};
 // ==========================================
 // 1. 快照读取 (最安全的读取方式)
 // ==========================================

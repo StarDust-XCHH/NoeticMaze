@@ -5,10 +5,28 @@
 #ifndef NOETICMAZE_ROBOCONIFG_H
 #define NOETICMAZE_ROBOCONIFG_H
 
+
+// 蓝牙相关
+
+// ======================================================================
+// 宏定义配置：是否通过蓝牙发送雷达帧数据
+// 0: 关闭 (让出雷达队列给 ICP 线程，蓝牙仅以50Hz发送机器人状态)
+// 1: 开启 (阻塞读取雷达队列，同步发送雷达与机器人状态)
+// ======================================================================
+#define ENABLE_LIDAR_BT_TX  0
+
+
+
+// icp相关
+#define MIN_VALID_POINTS_FOR_INIT 280 // 需至少有 280 个有效点才认为icp初始化完成
+#define ICP_REF_UPDATE_FRAMES 5
+
 // imu相关
 #define YAW_DRIFT_RATE  0.00391974f
 
-
+// lidar相关
+#define MIN_VALID_DIST 30 // 最小有效距离3cm
+#define MAX_VALID_DIST 8000 // 最大有效距离8m
 
 // ==========================================
 // 1. 编码器与电机物理参数配置 (MC520P30_12V)
