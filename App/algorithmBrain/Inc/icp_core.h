@@ -45,6 +45,5 @@ void get_surface_normals(Point* scan, Point* normals, int* valid_mask);
 Pose point_to_line_icp(Point* curr_local, int* curr_mask, Point* ref_global, Point* ref_normals, int* ref_mask, Pose init_pose) ;
 
 // 点云畸变修正
-void motion_deskew(Point* curr_local, int* curr_mask, float linear_v, float angular_w);
-
+void motion_deskew(Point* curr_local, int* curr_mask, float linear_v, float angular_w, float scan_time);
 #endif //NOETICMAZE_ICP_CORE_H

@@ -146,6 +146,24 @@ static uint8_t Lidar_DecodeFrame_DSP(Lidar_HandleTypeDef *hlidar, const uint8_t 
         if (hlidar->current_map != NULL) {
             hlidar->current_map->sweep_count = hlidar->sweep_count;
             hlidar->current_map->timestamp = osKernelGetTickCount();
+
+            // ==========================================================
+            // 【硬核时间同步】：使用 5KHz 硬件采样率反推绝对物理时间
+            // ==========================================================
+            // 当前这包数据属于新的一圈，所以历史累积的点数就是上一圈的总点数
+            float real_scan_time = (float)hlidar->points_since_last_sweep / 5000.0f;
+
+            // 安全保护：防止开机第一圈点数不全，限制在合理范围内 (8Hz~12Hz 对应 0.125s~0.083s)
+            if (real_scan_time > 0.07f && real_scan_time < 0.15f) {
+                hlidar->current_map->scan_time = real_scan_time;
+            } else {
+                hlidar->current_map->scan_time = 0.1f; // 异常时保底
+            }
+
+            // 清零计数器，重新开始为新的一圈计点！
+            hlidar->points_since_last_sweep = 0;
+            // ==========================================================
+
         }
         sweep_completed = 1;
     }
@@ -180,6 +198,15 @@ static uint8_t Lidar_DecodeFrame_DSP(Lidar_HandleTypeDef *hlidar, const uint8_t 
             hlidar->current_map->distance[angle_idx] = dis;
         }
     }
+
+
+    // ==========================================================
+    // 步骤 C：时间积分！
+    // ==========================================================
+    // 不管上面的 for 循环里有多少个点被 continue 丢弃了
+    // 只要代码走到了这里，说明硬件确确实实向我们发送了 40 个原始点
+    // 我们必须忠实地把这 40 个点加到时间累加器中
+    hlidar->points_since_last_sweep += LIDAR_POINTS_PER_FRAME;
 
     return sweep_completed;
 }

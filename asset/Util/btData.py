@@ -17,6 +17,7 @@ TYPE_CMD = 0x03
 TYPE_ACK = 0x04
 TYPE_STATUS = 0x01
 TYPE_MAP_ICP = 0x05
+TYPE_LIDAR_RAW = 0x02  # 【新增】原始雷达帧协议类型
 
 # --- PID 收敛评估阈值 ---
 CONVERGENCE_THRESHOLD = 2.0
@@ -32,23 +33,25 @@ MAP_PADDING = (MAP_DIM - STM32_MAP_SIZE) // 2  # 计算布局偏移: 175
 class RobotGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("STM32 机器人控制台 (键盘操控 & 交互地图版)")
-        self.root.geometry("750x1020")
+        self.root.title("STM32 机器人控制台 (点云畸变观测 & ICP交互版)")
+        # 【修改】大幅加宽窗口以容纳双屏并排显示
+        self.root.geometry("1280x1020")
 
         # 地图渲染状态初始化
         self.grid = np.full((MAP_DIM, MAP_DIM), 127, dtype=np.uint8)
         self.trajectory = deque(maxlen=2000)
         self.map_image_tk = None
-        
-        # 【新增】缓存渲染的基础地图，用于解耦数据更新和鼠标交互重绘
+        self.lidar_image_tk = None # 【新增】原始雷达图像缓冲
+
+        # 缓存渲染的基础地图，用于解耦数据更新和鼠标交互重绘
         self.cached_color_map = cv2.flip(cv2.cvtColor(self.grid, cv2.COLOR_GRAY2RGB), 0)
 
-        # 【新增】视图变换状态 (缩放、平移、旋转)
+        # 视图变换状态 (缩放、平移、旋转)
         self.view_zoom = 1.0
         self.view_offset_x = 0.0
         self.view_offset_y = 0.0
         self.view_angle = 0.0
-        
+
         self.is_panning = False
         self.is_rotating = False
         self.pan_start_x = 0
@@ -58,7 +61,7 @@ class RobotGUI:
         # 目标速度变量与频率控制变量
         self.target_yaw_rate = 0.0
         self.target_linear_vel = 0.0
-        self.last_send_time = 0.0 
+        self.last_send_time = 0.0
 
         try:
             self.ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.01)
@@ -70,7 +73,7 @@ class RobotGUI:
         self.running = True
         self.setup_ui()
         self.bind_keys()
-        self.bind_mouse_events() # 【新增】绑定鼠标事件
+        self.bind_mouse_events()
 
         # 初始化渲染第一帧
         self.render_map()
@@ -109,21 +112,38 @@ class RobotGUI:
         self.lbl_sweep = tk.Label(status_frame, text="Sweep: 0", font=("Arial", 10))
         self.lbl_sweep.grid(row=0, column=3, padx=10)
 
-        # 2. ICP 与地图数据展示区
-        # 【新增】提示文字
-        map_title = " ICP位姿与地图增量 (左键平移 | 右键旋转 | 滚轮缩放 | 双击重置) "
-        map_frame = tk.LabelFrame(self.root, text=map_title, padx=10, pady=5)
-        map_frame.pack(fill="x", padx=10, pady=5)
+        # =========================================================================
+        # 【新增】双屏并排布局区
+        center_container = tk.Frame(self.root)
+        center_container.pack(fill="x", padx=10, pady=5)
 
-        self.lbl_icp_pose = tk.Label(map_frame, text="ICP 匹配位姿 -> X: 0.000, Y: 0.000, Theta: 0.000", font=("Arial", 11, "bold"), fg="purple")
+        # 左侧：ICP 累积地图面板
+        map_title = " ICP位姿与地图增量 (左键平移 | 右键旋转 | 滚轮缩放) "
+        map_frame = tk.LabelFrame(center_container, text=map_title, padx=10, pady=5)
+        map_frame.pack(side="left", fill="both", expand=True, padx=(0, 5))
+
+        self.lbl_icp_pose = tk.Label(map_frame, text="ICP 位姿 -> X: 0.000, Y: 0.000, Theta: 0.000", font=("Arial", 11, "bold"), fg="purple")
         self.lbl_icp_pose.grid(row=0, column=0, padx=10, sticky="w")
 
-        self.lbl_map_count = tk.Label(map_frame, text="最新接收栅格数: 0 (共 0 字节 payload)", font=("Arial", 10))
+        self.lbl_map_count = tk.Label(map_frame, text="最新接收栅格数: 0 (共 0 字节)", font=("Arial", 10))
         self.lbl_map_count.grid(row=1, column=0, padx=10, sticky="w")
 
-        # 使用 Label 来承载图像，并且绑定鼠标事件
         self.map_display = tk.Label(map_frame, bg="black", width=MAP_DIM, height=MAP_DIM, cursor="crosshair")
         self.map_display.grid(row=2, column=0, pady=10, padx=10)
+
+        # 右侧：原始雷达点云面板
+        lidar_frame = tk.LabelFrame(center_container, text=" 原始雷达点云观测 (TYPE: 0x02) ", padx=10, pady=5)
+        lidar_frame.pack(side="right", fill="both", expand=True, padx=(5, 0))
+
+        self.lbl_lidar_info = tk.Label(lidar_frame, text="物理扫描耗时: 0.0000 s | 真实频率: 0.0 Hz", font=("Arial", 11, "bold"), fg="#FF8C00")
+        self.lbl_lidar_info.grid(row=0, column=0, padx=10, sticky="w")
+
+        self.lbl_lidar_desc = tk.Label(lidar_frame, text="本面板展示未经过畸变补偿的纯原始坐标极点", font=("Arial", 10), fg="gray")
+        self.lbl_lidar_desc.grid(row=1, column=0, padx=10, sticky="w")
+
+        self.lidar_display = tk.Label(lidar_frame, bg="#111111", width=MAP_DIM, height=MAP_DIM)
+        self.lidar_display.grid(row=2, column=0, pady=10, padx=10)
+        # =========================================================================
 
         # 3. 键盘控制区
         control_frame = tk.LabelFrame(self.root, text=" 键盘控制区 (请保持英文输入法) ", padx=10, pady=5)
@@ -147,32 +167,27 @@ class RobotGUI:
         self.log_area = scrolledtext.ScrolledText(log_frame, state='disabled', height=5)
         self.log_area.pack(fill="both", expand=True)
 
-    # ========================== 【新增】鼠标交互事件 ==========================
+    # ========================== 鼠标交互事件 (仅针对左侧地图) ==========================
     def bind_mouse_events(self):
-        # 滚轮缩放 (Windows: <MouseWheel>, Linux: <Button-4> / <Button-5>)
         self.map_display.bind("<MouseWheel>", self.on_mouse_wheel)
         self.map_display.bind("<Button-4>", self.on_mouse_wheel)
         self.map_display.bind("<Button-5>", self.on_mouse_wheel)
 
-        # 左键拖拽 - 平移
         self.map_display.bind("<ButtonPress-1>", self.on_pan_start)
         self.map_display.bind("<B1-Motion>", self.on_pan_drag)
         self.map_display.bind("<ButtonRelease-1>", self.on_pan_end)
 
-        # 右键拖拽 - 旋转
         self.map_display.bind("<ButtonPress-3>", self.on_rot_start)
         self.map_display.bind("<B3-Motion>", self.on_rot_drag)
         self.map_display.bind("<ButtonRelease-3>", self.on_rot_end)
 
-        # 左键双击 - 视角复位
         self.map_display.bind("<Double-Button-1>", self.reset_view)
 
     def on_mouse_wheel(self, event):
-        # 兼容 Windows 和 Linux 的滚轮事件
         if event.delta > 0 or getattr(event, 'num', 0) == 4:
-            self.view_zoom *= 1.15  # 放大
+            self.view_zoom *= 1.15
         elif event.delta < 0 or getattr(event, 'num', 0) == 5:
-            self.view_zoom /= 1.15  # 缩小
+            self.view_zoom /= 1.15
         self.render_map()
 
     def on_pan_start(self, event):
@@ -200,8 +215,7 @@ class RobotGUI:
     def on_rot_drag(self, event):
         if self.is_rotating:
             dx = event.x - self.rot_start_x
-            # 鼠标左右拖动映射为旋转角度变化
-            self.view_angle -= dx * 0.5 
+            self.view_angle -= dx * 0.5
             self.rot_start_x = event.x
             self.render_map()
 
@@ -209,7 +223,6 @@ class RobotGUI:
         self.is_rotating = False
 
     def reset_view(self, event=None):
-        """双击重置地图视角"""
         self.view_zoom = 1.0
         self.view_offset_x = 0.0
         self.view_offset_y = 0.0
@@ -217,22 +230,17 @@ class RobotGUI:
         self.render_map()
 
     def render_map(self):
-        """ 【新增】独立的渲染管线，应用旋转、平移、缩放后刷新UI """
         if self.cached_color_map is None:
             return
 
         center = (MAP_DIM // 2, MAP_DIM // 2)
-        # 获取二维仿射变换矩阵 (包含旋转和缩放)
         M = cv2.getRotationMatrix2D(center, self.view_angle, self.view_zoom)
-        
-        # 将平移偏移量加到矩阵中
+
         M[0, 2] += self.view_offset_x
         M[1, 2] += self.view_offset_y
 
-        # 使用 OpenCV 进行硬件加速的图像变换，填充色设为 127(灰色未知区域)
         transformed_map = cv2.warpAffine(self.cached_color_map, M, (MAP_DIM, MAP_DIM), borderValue=(127, 127, 127))
 
-        # 转换为 Tkinter 格式并显示
         img = Image.fromarray(transformed_map)
         self.map_image_tk = ImageTk.PhotoImage(image=img)
         self.map_display.config(image=self.map_image_tk)
@@ -243,12 +251,12 @@ class RobotGUI:
         self.root.bind('<KeyPress-W>', lambda e: self.change_speed(v_delta=0.02))
         self.root.bind('<KeyPress-s>', lambda e: self.change_speed(v_delta=-0.02))
         self.root.bind('<KeyPress-S>', lambda e: self.change_speed(v_delta=-0.02))
-        
+
         self.root.bind('<KeyPress-a>', lambda e: self.change_speed(w_delta=10.0))
         self.root.bind('<KeyPress-A>', lambda e: self.change_speed(w_delta=10.0))
         self.root.bind('<KeyPress-d>', lambda e: self.change_speed(w_delta=-10.0))
         self.root.bind('<KeyPress-D>', lambda e: self.change_speed(w_delta=-10.0))
-        
+
         self.root.bind('<space>', lambda e: self.stop_robot())
 
     def change_speed(self, v_delta=0.0, w_delta=0.0):
@@ -260,7 +268,7 @@ class RobotGUI:
         new_w = round(self.target_yaw_rate + w_delta, 1)
 
         new_v = max(-0.1, min(0.1, new_v))
-        new_w = max(-60.0, min(60.0, new_w))
+        new_w = max(-360.0, min(360.0, new_w))
 
         if new_v != self.target_linear_vel or new_w != self.target_yaw_rate:
             self.target_linear_vel = new_v
@@ -299,6 +307,7 @@ class RobotGUI:
         except Exception as e:
             self.write_log(f"发送串口错误: {e}")
 
+    # ========================== 核心数据接收与分发 ==========================
     def receive_handler(self):
         buffer = b""
         while self.running:
@@ -331,7 +340,7 @@ class RobotGUI:
                             d = struct.unpack('<Iffffff', payload)
                             self.root.after(0, self.update_status_ui, d[4], d[5], d[6], d[1], d[2], d[3], d[0])
                         except Exception as e:
-                            print(f"Status Parse Error: {e}")
+                            pass
                         buffer = buffer[32:]
 
                     elif pkg_type == TYPE_ACK and buffer.startswith(b'\x5A\x5A'):
@@ -340,12 +349,32 @@ class RobotGUI:
                             _, _, r_yaw_rate, r_linear_vel, _ = struct.unpack('<HBffB', buffer[:12])
                             self.root.after(0, self.write_log, f"收到回显 ✔: 角速度={r_yaw_rate:.1f}°/s, 线速度={r_linear_vel:.2f}m/s")
                         except Exception as e:
-                            print(f"ACK Parse Error: {e}")
+                            pass
                         buffer = buffer[12:]
 
+                    # 【新增】解析原始雷达数据 (728 字节新协议)
+                    elif pkg_type == TYPE_LIDAR_RAW and buffer.startswith(b'\xAA\x55'):
+                        if len(buffer) < 728:
+                            break
+
+                        # Checksum 计算范围：Payload (360个uint16 + 1个float)
+                        expected_chk = sum(buffer[3:727]) & 0xFF
+                        actual_chk = buffer[727]
+
+                        if expected_chk == actual_chk:
+                            try:
+                                # 解析 360 个距离数据 (720 字节) 和 1 个耗时数据 (4 字节)
+                                distances = struct.unpack('<360H', buffer[3:723])
+                                scan_time = struct.unpack('<f', buffer[723:727])[0]
+                                self.root.after(0, self.update_lidar_ui, distances, scan_time)
+                            except Exception as e:
+                                print(f"Raw Lidar Parse Error: {e}")
+
+                        buffer = buffer[728:]
+
+                    # 解析 ICP 增量地图 (保留不变)
                     elif pkg_type == TYPE_MAP_ICP and buffer.startswith(b'\xAA\x55'):
                         if len(buffer) < 5: break
-
                         data_len = struct.unpack('<H', buffer[3:5])[0]
                         total_tx_size = 5 + data_len + 1
 
@@ -365,7 +394,7 @@ class RobotGUI:
                             self.root.after(0, self.update_map_ui, icp_x, icp_y, icp_theta, diff_count, data_len, diff_pts)
 
                         except Exception as e:
-                            print(f"Map Parse Error: {e}")
+                            pass
 
                         buffer = buffer[total_tx_size:]
 
@@ -373,6 +402,58 @@ class RobotGUI:
                         buffer = buffer[2:]
 
             time.sleep(0.002)
+
+    # ========================== 【新增】原始雷达点云极速渲染 ==========================
+    def update_lidar_ui(self, distances, scan_time):
+        # 1. 更新顶部文字信息
+        freq = (1.0 / scan_time) if scan_time > 0.001 else 0.0
+        self.lbl_lidar_info.config(text=f"物理扫描耗时: {scan_time:.4f} s | 真实频率: {freq:.1f} Hz")
+
+        # 2. 准备黑底画布
+        img = np.zeros((MAP_DIM, MAP_DIM, 3), dtype=np.uint8)
+        center = MAP_DIM // 2
+
+        # 3. 绘制同心圆距离参考线 (1米~5米)
+        max_dist_mm = 6000.0   # 设置画布边缘对应最大量程 6 米
+        scale = (MAP_DIM / 2) / max_dist_mm
+        for r_m in range(1, 6):
+            r_px = int(r_m * 1000 * scale)
+            cv2.circle(img, (center, center), r_px, (40, 40, 40), 1)
+        cv2.line(img, (center, 0), (center, MAP_DIM), (40, 40, 40), 1)
+        cv2.line(img, (0, center), (MAP_DIM, center), (40, 40, 40), 1)
+
+        # 4. 向量化计算极坐标到像素系的映射
+        dist_array = np.array(distances)
+        angles_rad = np.deg2rad(np.arange(360))
+
+        # 过滤无效噪点
+        valid_mask = (dist_array > 30) & (dist_array < max_dist_mm)
+        valid_dists = dist_array[valid_mask]
+        valid_angles = angles_rad[valid_mask]
+
+        # 物理系：X轴正向(车头)为0度，逆时针角度增加。映射到图像系：
+        # 车头朝上 (-Y方向), 车左朝左 (-X方向)
+        robot_x = valid_dists * np.cos(valid_angles)
+        robot_y = valid_dists * np.sin(valid_angles)
+
+        img_x = (center - robot_y * scale).astype(np.int32)
+        img_y = (center - robot_x * scale).astype(np.int32)
+
+        in_bounds = (img_x >= 0) & (img_x < MAP_DIM) & (img_y >= 0) & (img_y < MAP_DIM)
+        img_x = img_x[in_bounds]
+        img_y = img_y[in_bounds]
+
+        # 5. 打点 (RGB模式：绿色)
+        img[img_y, img_x] = (0, 255, 0)
+
+        # 6. 画一个红色的车头中心标志
+        cv2.circle(img, (center, center), 4, (255, 0, 0), -1)
+
+        # 7. 刷新到 UI
+        img_pil = Image.fromarray(img)
+        self.lidar_image_tk = ImageTk.PhotoImage(image=img_pil)
+        self.lidar_display.config(image=self.lidar_image_tk)
+    # =========================================================================
 
     def update_map_ui(self, icp_x, icp_y, icp_theta, diff_count, payload_len, diff_pts):
         self.lbl_icp_pose.config(text=f"ICP 匹配位姿 -> X: {icp_x:.3f}, Y: {icp_y:.3f}, Theta: {icp_theta:.3f} rad")
@@ -419,15 +500,14 @@ class RobotGUI:
 
         if len(self.trajectory) > 1:
             pts = np.array(self.trajectory, np.int32).reshape((-1, 1, 2))
-            cv2.polylines(color_map, [pts], False, (0, 100, 255), 1) 
+            cv2.polylines(color_map, [pts], False, (0, 100, 255), 1)
 
         if len(self.trajectory) > 0:
-            cv2.circle(color_map, (rgx, rgy), 3, (255, 0, 0), -1)    
+            cv2.circle(color_map, (rgx, rgy), 3, (255, 0, 0), -1)
             ltx = int(rgx + 8 * np.cos(icp_theta))
             lty = int(rgy + 8 * np.sin(icp_theta))
-            cv2.line(color_map, (rgx, rgy), (ltx, lty), (0, 255, 0), 2) 
+            cv2.line(color_map, (rgx, rgy), (ltx, lty), (0, 255, 0), 2)
 
-        # 【修改】这里计算出原生基础图像后，存入缓存，并调用 render_map 应用视角变换
         flipped_map = cv2.flip(color_map, 0)
         self.cached_color_map = flipped_map
         self.render_map()

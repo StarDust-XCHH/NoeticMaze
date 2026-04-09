@@ -11,29 +11,29 @@
 
 
 /**
- * @brief 点云运动畸变补偿 (Motion Deskew) - STM32 FPU 优化版
+ * @brief 点云运动畸变补偿 (Motion Deskew) - STM32 FPU 终极优化版
  * @param curr_local 当前帧雷达原始点云
  * @param curr_mask  有效点掩码
- * @param linear_v   小车当前线速度 (m/s)
- * @param angular_w  小车当前角速度 (rad/s)
+ * @param linear_v   小车当前线速度 (m/s)，向前为正
+ * @param angular_w  小车当前角速度 (rad/s)，逆时针为正 (CCW+)
+ * @param scan_time  本圈雷达扫描的真实物理耗时 (s)
  */
-/**
- * @brief 点云运动畸变补偿 (统一对齐到扫描结束时刻 t = 0.1s)
- */
-void motion_deskew(Point* curr_local, int* curr_mask, float linear_v, float angular_w) {
-    const float SCAN_TIME = 0.1f;
+void motion_deskew(Point* curr_local, int* curr_mask, float linear_v, float angular_w, float scan_time) {
+    // 【性能优化】：将循环内的除法提取到外部，计算出每个点之间的时间间隔比例
+    // 用乘法代替除法，可为 360 次循环省下数百个时钟周期
+    float time_step_ratio = scan_time / (float)SCAN_SIZE;
 
     for (int i = 0; i < SCAN_SIZE; i++) {
         if (!curr_mask[i]) continue;
 
-        // 【核心修改】：计算距离扫描结束的负时间差 (-0.1s 到 0.0s)
-        // 这样算出来的 dt_from_end 是负数，意味着我们在向后追溯历史点的发生时刻
-        float dt_from_end = SCAN_TIME * ((float)i / (float)SCAN_SIZE) - SCAN_TIME;
+        // 计算距离扫描结束的负时间差 (-scan_time 到 0.0s)
+        float dt_from_end = (float)i * time_step_ratio - scan_time;
 
         // 使用相对结束时刻的时间差计算历史位姿偏移
         float d_theta = angular_w * dt_from_end;
         float dx, dy;
 
+        // 防止除以 0 的极小值保护
         if (fabsf(angular_w) > 1e-4f) {
             float v_w = linear_v / angular_w;
             dx = v_w * sinf(d_theta);
@@ -43,7 +43,7 @@ void motion_deskew(Point* curr_local, int* curr_mask, float linear_v, float angu
             dy = 0.0f;
         }
 
-        // 将历史测量的点，推演到扫描结束时的坐标系下
+        // 将历史测量的点，推演到扫描结束时的当前坐标系下
         float cos_t = cosf(d_theta);
         float sin_t = sinf(d_theta);
         float px = curr_local[i].x;

@@ -38,6 +38,9 @@ typedef struct {
     uint16_t distance[LIDAR_MAP_SIZE];
     uint32_t timestamp;              // 记录帧产生的时间戳
     uint32_t sweep_count;            // 圈数
+
+    float    scan_time;              // 【新增】：本圈真实物理耗时 (秒)
+
 } LidarMap_t;
 
 // 雷达控制句柄
@@ -56,6 +59,10 @@ typedef struct {
     // 解析状态
     float32_t last_start_angle;
     uint32_t  sweep_count;
+
+
+    // 【新增】：用于精准计时的点数累加器
+    uint32_t  points_since_last_sweep;
 
     // 当前正在写入的雷达地图指针
     LidarMap_t *current_map;

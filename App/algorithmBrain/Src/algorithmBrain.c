@@ -144,8 +144,12 @@ void StartAlgorithmBrain(void *argument)
             // ⚠️ 同样要注意正负号：必须符合逆时针为正 (CCW+)！如果原数据是顺时针为正，这里要加负号！
             float current_angular_w = current_robot_state.yaw_rate * (PI / 180.0f);
 
-            // 调用你写好的 FPU 优化版去畸变函数
-            motion_deskew(curr_scan, curr_mask, current_linear_v, current_angular_w);
+            // 取出由 5KHz 硬件时钟积分得来的完美无抖动时间
+            float real_scan_time = received_map->scan_time;
+
+            // 传给运动畸变补偿函数
+            motion_deskew(curr_scan, curr_mask, current_linear_v, current_angular_w, real_scan_time);
+
 
             // ==========================================
             // 步骤 B: ICP 核心逻辑
