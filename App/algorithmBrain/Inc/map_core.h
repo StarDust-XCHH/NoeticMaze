@@ -1,17 +1,19 @@
 //
 // Created by lmtgy on 2026/4/9.
-//
+// E:\EBU6475MicroprocessorSystemsDesign\NoeticMaze\App\algorithmBrain\Inc\map_core.h
 
 #ifndef NOETICMAZE_MAP_CORE_H
 #define NOETICMAZE_MAP_CORE_H
 #include <stdint.h>
+
+#include "bt_protocol.h"
+#include "cmsis_os2.h"
 extern uint32_t diff_cnt;
 int world_to_grid(float world_val, int *grid_idx);
 // 定义 2-bit 的三种明确状态
 #define MAP_UNKNOWN  0x00  // 二进制 00：雷达还没扫到的地方
 #define MAP_FREE     0x01  // 二进制 01：安全可通行区域
 #define MAP_OCCUPIED 0x02  // 二进制 10：障碍物/墙壁
-#define MAX_MAP_DIFF 1000  // 每帧最多发送 1000 个变化格子 (总计 3KB)
 #define MAP_OFFSET 0.0f    // 根据实际情况调整偏移
 #define MAP_RES 0.02f
 #define MAP_SIZE 250        // 5m / 0.02m
@@ -20,6 +22,11 @@ void trace_ray_bresenham_diff(int x0, int y0, int x1, int y1);
 extern uint8_t diff_payload[MAX_MAP_DIFF * 3];
 extern uint8_t global_map[15625];
 
+// 栅格地图蓝牙发送相关
+
+extern osMutexId_t MapDataMutexHandle;
+extern MapIcp_Packet_t g_Shared_MapIcp_Data;
+extern volatile uint8_t g_MapIcp_Ready;
 
 /**
  * @brief  读取栅格状态 (2-bit 压缩版)

@@ -11,7 +11,7 @@
 typedef struct {
     // --- 姿态与角速度 (通常由 IMU 任务更新) ---
     float yaw;          // 当前偏航角 (0-360)
-    float yaw_rate;     // 当前角速度 (Z轴)
+    float yaw_rate;     // 当前角速度 (Z轴 deg/s)
     uint8_t imu_ready;  // <--- 新增：IMU 是否校准完成标志
 
     // --- 位置与线速度 (通常由 里程计/编码器 任务更新) ---

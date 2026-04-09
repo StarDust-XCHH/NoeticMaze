@@ -99,6 +99,11 @@ osMutexId_t PrintfMutexHandle;
 const osMutexAttr_t PrintfMutex_attributes = {
   .name = "PrintfMutex"
 };
+/* Definitions for MapDataMutex */
+osMutexId_t MapDataMutexHandle;
+const osMutexAttr_t MapDataMutex_attributes = {
+  .name = "MapDataMutex"
+};
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
@@ -126,6 +131,9 @@ void MX_FREERTOS_Init(void) {
   /* Create the mutex(es) */
   /* creation of PrintfMutex */
   PrintfMutexHandle = osMutexNew(&PrintfMutex_attributes);
+
+  /* creation of MapDataMutex */
+  MapDataMutexHandle = osMutexNew(&MapDataMutex_attributes);
 
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */

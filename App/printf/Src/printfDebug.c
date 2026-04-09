@@ -14,6 +14,7 @@
 #include "lidar.h"
 #include "robot_state.h"
 #include "bt_protocol.h"
+#include "map_core.h"
 #include "motor_pid.h"
 #include "roboConifg.h"
 
@@ -41,11 +42,64 @@ uint8_t bt_rx_raw_buf[BT_RX_BUF_SIZE]; // DMA 直接写入的原始缓冲区
 char    bt_process_buf[BT_RX_BUF_SIZE+1]; // 解析用的转储缓冲区
 volatile uint8_t bt_frame_ready = 0;    // 帧就绪标志位
 
+
+// 蓝牙发送缓冲区
+
+// 【重点】：静态分配 DMA 发送缓冲区，彻底杜绝爆栈
+// DMA 必须使用这块稳定的内存，直到发送完成前不能被修改
+static MapIcp_Packet_t tx_map_pkg;
+
+
 // GCC 编译器的 printf 底层输出函数重定向
 int _write(int file, char *ptr, int len) {
     (void)file;
     return 0 ;
 }
+
+
+void Send_MapIcp_Data_DMA(void) {
+    if (g_MapIcp_Ready == 1)
+    {
+        if (Wait_UART_Ready(&huart3, 10) == 0) {
+            // 1. 尝试加锁
+            if (osMutexAcquire(MapDataMutexHandle, pdMS_TO_TICKS(5)) == osOK) {
+
+                // 计算有效载荷长度 (12字节Pose + 2字节count + N字节地图)
+                uint16_t payload_len = 12 + 2 + (g_Shared_MapIcp_Data.diff_count * 3);
+
+                // 填充固定字段
+                tx_map_pkg.header = 0x55AA;
+                tx_map_pkg.type = 0x05;
+                tx_map_pkg.data_len = payload_len;
+
+                // 拷贝有效载荷部分 (icp_x 开始到 diff_payload 结束)
+                // 地址偏移 5 字节 = header(2) + type(1) + data_len(2)
+                memcpy(((uint8_t*)&tx_map_pkg) + 5, ((uint8_t*)&g_Shared_MapIcp_Data) + 5, payload_len);
+
+                g_MapIcp_Ready = 0; // 释放生产信号
+                osMutexRelease(MapDataMutexHandle);
+
+                // 2. 计算校验和 (从 type 开始到 payload 结束，不包含 header)
+                // 范围：Type(1) + DataLen(2) + Payload(payload_len)
+                uint32_t check_range_len = 3 + payload_len;
+                uint8_t sum = Calc_Checksum(((uint8_t*)&tx_map_pkg) + 2, check_range_len);
+
+                // 3. 将校验位塞进数据的屁股后面
+                uint8_t* p_raw = (uint8_t*)&tx_map_pkg;
+                p_raw[5 + payload_len] = sum;
+
+                // 4. 计算 DMA 最终发送长度: Header(2) + Type(1) + Len(2) + Payload(payload_len) + Checksum(1)
+                uint32_t total_tx_size = 5 + payload_len + 1;
+
+                // 5. 启动非阻塞 DMA 发送
+                if (Wait_UART_Ready(&huart3, 10) == 0) {
+                    HAL_UART_Transmit_DMA(&huart3, p_raw, total_tx_size);
+                }
+            }
+        }
+    }
+}
+
 
 /**
  * @brief 计算单字节校验和
@@ -64,15 +118,17 @@ static uint8_t Calc_Checksum(uint8_t *data, uint16_t len) {
  */
 static int Wait_UART_Ready(UART_HandleTypeDef *huart, uint32_t timeout_ms) {
     uint32_t start_time = osKernelGetTickCount();
-    // 轮询检查 UART 状态
     while (huart->gState != HAL_UART_STATE_READY) {
         if ((osKernelGetTickCount() - start_time) > pdMS_TO_TICKS(timeout_ms)) {
-            return -1; // 超时
+            // 【关键修复】超时后强行终止可能卡死的 DMA/UART 状态机，使其恢复 READY
+            HAL_UART_AbortTransmit(huart);
+            return -1;
         }
-        osDelay(1); // 让出 CPU 权限给其他任务
+        osDelay(1);
     }
     return 0;
 }
+
 
 /**
  * @brief 启动蓝牙 DMA 接收 (建议在任务循环开始前调用一次)
@@ -193,6 +249,14 @@ void StartTaskPrint(void *argument) {
             }
         }
 #else
+
+
+        // 2. [新增] 检查是否有新的地图增量和ICP位姿准备就绪
+
+        Send_MapIcp_Data_DMA();
+
+
+
         // ==========================================================
         // 【模式二：禁用雷达发送】按 50Hz 独立时序发送状态包
         // ==========================================================

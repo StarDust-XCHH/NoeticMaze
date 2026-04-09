@@ -6,6 +6,10 @@
 #define NOETICMAZE_BT_PROTOCOL_H
 #include <stdint.h>
 
+// ✅ 将宏定义移动到这里：这是协议级的数据载荷限制
+#define MAX_MAP_DIFF 1000
+
+
 // 强制 1 字节对齐，防止内存填充
 #pragma pack(push, 1)
 
@@ -50,6 +54,22 @@ typedef struct {
     float    linear_vel; // 【修改】预期线速度 (m/s)
     uint8_t  checksum;
 } AckPacket_t;
+
+typedef struct {
+    uint16_t header;       // 0x55AA
+    uint8_t  type;         // 0x05
+    uint16_t data_len;     // 【关键】后面有效载荷的总字节数 (Pose + Payload)
+
+    // 以下为有效载荷 (Payload)
+    float    icp_x;
+    float    icp_y;
+    float    icp_theta;
+    uint16_t diff_count;   // 增量点的个数
+    uint8_t  diff_payload[MAX_MAP_DIFF * 3];
+
+    // 注意：checksum 将被动态放置在有效载荷的最后一个字节
+    uint8_t  checksum;
+} MapIcp_Packet_t;
 
 #pragma pack(pop)
 #endif //NOETICMAZE_BT_PROTOCOL_H

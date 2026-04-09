@@ -6,6 +6,8 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+
+#include "bt_protocol.h"
 uint32_t diff_cnt = 0;
 uint8_t diff_payload[MAX_MAP_DIFF * 3];
 uint8_t global_map[15625];
@@ -46,6 +48,13 @@ void trace_ray_bresenham_diff(int x0, int y0, int x1, int y1) {
         if (e2 <= dx) { err += dx; y0 += sy; }
     }
 }
+
+
+// 栅格地图蓝牙发送相关
+
+// 这是一个专门用来给发送任务做中转的结构体，放全局 BSS 段
+MapIcp_Packet_t g_Shared_MapIcp_Data;
+volatile uint8_t g_MapIcp_Ready = 0; // 标志位：提示有新数据可以发送
 
 
 

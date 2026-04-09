@@ -28,6 +28,8 @@ static uint8_t  icp_internal_init = 0;
 // 在 Task 外部定义静态变量，用于跨帧记忆位姿状态
 static Pose last_icp_pose = {0.0f, 0.0f, 0.0f};
 static Pose last_raw_odom = {0.0f, 0.0f, 0.0f};
+// 在文件头部静态变量区新增
+static Pose last_ref_pose = {0.0f, 0.0f, 0.0f};
 
 // --- 【关键修复：将大数组放入全局 BSS 段，防止任务爆栈】 ---
 Point ref_scan[SCAN_SIZE];
@@ -64,11 +66,34 @@ void StartAlgorithmBrain(void *argument)
             RobotState_t current_robot_state;
             Get_Robot_State_Snapshot(&current_robot_state);
 
+
+            // ==========================================
+            // 【新增】：IMU 状态拦截
+            // ==========================================
+            if (current_robot_state.imu_ready == 0) {
+                // 如果 IMU 未校准完毕，则丢弃当前帧雷达数据，归还内存块给空闲队列
+                osMessageQueuePut(LidarFreeQueueHandle, &received_map, 0, 0);
+                received_map = NULL;
+
+                // 可选：加个极短的 delay 防止死等时过度占用 CPU（通常不需要，因为前面 osMessageQueueGet 是阻塞的）
+                continue; // 跳过本帧的 ICP 和建图，直接进入下一次 for(;;) 循环等待新雷达数据
+            }
+            // ==========================================
+
             // 【修正 1】：IMU 读出的是角度制，ICP 内部需要严格的标准弧度制
             Pose curr_raw_odom;
             curr_raw_odom.x = current_robot_state.x_encoder;
             curr_raw_odom.y = current_robot_state.y_encoder;
             curr_raw_odom.theta = current_robot_state.yaw * (PI / 180.0f); // Deg to Rad
+
+
+            // 你的 yaw 是 0~360 逆时针，直接转弧度
+            float yaw_rad = current_robot_state.yaw * (PI / 180.0f);
+
+            // 强制规范化到 [-PI, PI] 区间，防止 359度 和 0度 之间发生数值跳变崩盘！
+            while (yaw_rad >  PI) yaw_rad -= 2.0f * PI;
+            while (yaw_rad < -PI) yaw_rad += 2.0f * PI;
+            curr_raw_odom.theta = yaw_rad;
 
             // 2. 将极坐标 Lidar 数据转为 Cartesian (XY) 点云，并生成 Mask
             // 【修正 2】：处理 360 长度数组，顺时针(CW)转逆时针(CCW)，并用 DSP 加速
@@ -76,32 +101,51 @@ void StartAlgorithmBrain(void *argument)
                 uint16_t dist_mm = received_map->distance[i];
 
                 if(dist_mm > MIN_VALID_DIST && dist_mm < MAX_VALID_DIST) {
-                    // Lidar 索引 i 是顺时针(0~359度)
-                    // 右手标准系要求逆时针为正。转换公式：标准角度 = 360 - i (或 -i)
-                    float angle_rad = (360.0f - (float)i) * (PI / 180.0f);
+                    // 1. 顺时针(CW)转逆时针(CCW)
+                    float angle_deg = 360.0f - (float)i;
 
-                    // 保证角度在 0 ~ 2PI 之间（虽然 DSP 库的 sin/cos 能处理越界，但规范化更安全）
-                    if (angle_rad >= 2.0f * PI) {
-                        angle_rad -= 2.0f * PI;
-                    }
+                    // 2. 【关键修复】：补偿雷达硬件安装角度！
+                    // 如果雷达的 0度(排线/尾部) 朝向车尾，必须加上 180 度。
+                    // (如果排线朝左，加 270度；朝右，加 90度。请根据实际情况微调)
+                    angle_deg += 180.0f;
 
-                    // 调用 CMSIS-DSP 硬件加速三角函数计算 (内部为查表+泰勒插值，极快)
+                    // 3. 将角度规范化到 0~360 度之间
+                    while (angle_deg >= 360.0f) angle_deg -= 360.0f;
+                    while (angle_deg < 0.0f) angle_deg += 360.0f;
+
+                    // 4. 转为弧度
+                    float angle_rad = angle_deg * (PI / 180.0f);
+
                     float cos_val = arm_cos_f32(angle_rad);
                     float sin_val = arm_sin_f32(angle_rad);
-
                     float dist_m = dist_mm / 1000.0f;
 
-                    // 极坐标转直角坐标
                     curr_scan[i].x = dist_m * cos_val;
                     curr_scan[i].y = dist_m * sin_val;
-                    curr_mask[i] = 1; // 标记为有效点
+                    curr_mask[i] = 1;
                 } else {
-                    // 无效测距点（太近、太远、或吸收不反射）
                     curr_scan[i].x = 0.0f;
                     curr_scan[i].y = 0.0f;
-                    curr_mask[i] = 0; // 剔除无效点
+                    curr_mask[i] = 0;
                 }
             }
+
+
+            // ==========================================
+            // 【关键修复】：调用运动畸变补偿 (消除旋转漂移)
+            // ==========================================
+            // 注意！根据你之前 UI 截图的显示，你的角速度很可能是 角度/秒 (°/s)
+            // 而 motion_deskew 函数里要求的是 弧度/秒 (rad/s)！
+            // 这里必须进行严格的单位转换，否则点云会瞬间炸毁！
+
+            float current_linear_v = current_robot_state.linear_vel_encoder; // 确保是 m/s
+
+            // 假设你的状态机里角速度是度/秒，转成弧度/秒。
+            // ⚠️ 同样要注意正负号：必须符合逆时针为正 (CCW+)！如果原数据是顺时针为正，这里要加负号！
+            float current_angular_w = current_robot_state.yaw_rate * (PI / 180.0f);
+
+            // 调用你写好的 FPU 优化版去畸变函数
+            motion_deskew(curr_scan, curr_mask, current_linear_v, current_angular_w);
 
             // ==========================================
             // 步骤 B: ICP 核心逻辑
@@ -158,16 +202,38 @@ void StartAlgorithmBrain(void *argument)
                 while (guess.theta < -M_PI) guess.theta += 2.0f * M_PI;
 
                 // 2. 调用点到线 ICP 算法
-                result = point_to_line_icp(curr_scan, curr_mask, ref_scan, ref_normals, ref_mask, guess);
+                // 【进阶机制：里程计信任死区】
+                // 如果本帧相比上一帧，里程计的平移小于 2mm，且旋转小于 0.005 rad
+                if ((dx_local*dx_local + dy_local*dy_local) <ZUPT_DEADZONE_DIST_SQ && fabsf(dtheta) < ZUPT_DEADZONE_ANGLE_RAD) {
+                    // 小车基本静止或移动极慢，直接沿用先验 Guess，跳过 ICP 计算！
+                    result = guess;
+                } else {
+                    // 只有车真正动起来了，才去跑高耗时的 ICP
+                    result = point_to_line_icp(curr_scan, curr_mask, ref_scan, ref_normals, ref_mask, guess);
+                }
+
 
                 // 3. 更新历史记录供下帧推算
                 last_icp_pose = result;
                 last_raw_odom = curr_raw_odom;
 
                 // 4. 定期更新参考帧
-                icp_frame_counter++;
-                if (icp_frame_counter >= ICP_REF_UPDATE_FRAMES) {
-                    icp_frame_counter = 0;
+                // 4. 【进阶机制：空间关键帧更新】
+                float dx_ref = result.x - last_ref_pose.x;
+                float dy_ref = result.y - last_ref_pose.y;
+                float dtheta_ref = result.theta - last_ref_pose.theta;
+
+                // 角度规范化
+                while (dtheta_ref >  M_PI) dtheta_ref -= 2.0f * M_PI;
+                while (dtheta_ref < -M_PI) dtheta_ref += 2.0f * M_PI;
+
+                float dist_sq = dx_ref * dx_ref + dy_ref * dy_ref;
+
+                // 当平移大于 0.1米 (平方为 0.01) 或 旋转大于 0.1 rad (约5.7度) 时，才更新参考帧
+                if (dist_sq > ICP_KF_UPDATE_DIST_SQ || fabsf(dtheta_ref) > ICP_KF_UPDATE_ANGLE_RAD) {
+
+                    last_ref_pose = result; // 记录本次参考帧的位姿
+
                     float ct = cosf(result.theta), st = sinf(result.theta);
                     for(int k=0; k<SCAN_SIZE; k++) {
                         if (curr_mask[k]) {
@@ -220,6 +286,33 @@ void StartAlgorithmBrain(void *argument)
                     // 取消降采样，全量覆盖！
                     trace_ray_bresenham_diff(rx_grid, ry_grid, gx, gy);
                 }
+            }
+
+
+            // ==========================================
+            // 步骤 C 结束: 安全地将地图增量交接给发送线程
+            // ==========================================
+            // 1. 尝试获取互斥锁（等待 5ms，拿不到就放弃，保证算法线程实时性不被卡死）
+            if (osMutexAcquire(MapDataMutexHandle, pdMS_TO_TICKS(5)) == osOK) {
+
+                // 2. 组装固定包头和长度
+                g_Shared_MapIcp_Data.header = 0x55AA;
+                g_Shared_MapIcp_Data.type = 0x05;
+                g_Shared_MapIcp_Data.diff_count = diff_cnt;
+
+                // 3. 写入 ICP 预测位姿
+                g_Shared_MapIcp_Data.icp_x = result.x;
+                g_Shared_MapIcp_Data.icp_y = result.y;
+                g_Shared_MapIcp_Data.icp_theta = result.theta;
+
+                // 4. 将刚才累积的局部增量地图快速拷贝到全局共享区 (3KB 数据 memcpy 极快，约几十微秒)
+                if (diff_cnt > 0) {
+                    memcpy(g_Shared_MapIcp_Data.diff_payload, diff_payload, diff_cnt * 3);
+                }
+
+                // 5. 设置就绪标志位并释放锁
+                g_MapIcp_Ready = 1;
+                osMutexRelease(MapDataMutexHandle);
             }
 
 

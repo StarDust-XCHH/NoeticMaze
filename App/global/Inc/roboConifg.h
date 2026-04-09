@@ -19,7 +19,18 @@
 
 // icp相关
 #define MIN_VALID_POINTS_FOR_INIT 280 // 需至少有 280 个有效点才认为icp初始化完成
-#define ICP_REF_UPDATE_FRAMES 5
+// --- 空间关键帧更新阈值 (KeyFrame Update) ---
+// 决定了小车走多远、转多大角度才更新一次参考帧地图
+// 提示: 设得太大容易匹配丢步，设得太小(比如0)会导致静止发散
+#define ICP_KF_UPDATE_DIST_SQ    0.01f      // 距离平方阈值：0.01f 代表 0.1m (10cm) 的平方
+#define ICP_KF_UPDATE_ANGLE_RAD  0.1f       // 角度阈值：0.1f rad 约等于 5.7度
+
+// --- 里程计信任死区阈值 (Zero-Velocity Update / Deadzone) ---
+// 当编码器认为单帧位移小于这个值时，直接信任编码器，跳过 ICP
+// 提示: 根据你底层电机的抖动和编码器分辨率来微调，通常 1~5mm 即可
+#define ZUPT_DEADZONE_DIST_SQ    0.000004f  // 死区距离平方：0.000004f 代表 0.002m (2mm) 的平方
+#define ZUPT_DEADZONE_ANGLE_RAD  0.0025f     // 死区角度：0.005f rad 约等于 0.14度
+
 
 // imu相关
 #define YAW_DRIFT_RATE  0.00391974f
