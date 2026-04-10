@@ -8,6 +8,13 @@
 #include <stdlib.h>
 
 #include "bt_protocol.h"
+
+
+// 1. 声明身份：我是合法的 SLAM 线程！
+#define I_AM_SLAM_THREAD 1
+// 2. 然后再包含私有写入头文件
+#include "map_core_write.h"
+
 uint32_t diff_cnt = 0;
 uint8_t diff_payload[MAX_MAP_DIFF * 3];
 uint8_t global_map[15625];

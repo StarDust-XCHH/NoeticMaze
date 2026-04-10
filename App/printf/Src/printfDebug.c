@@ -221,6 +221,9 @@ void StartTaskPrint(void *argument) {
             arm_copy_q15((q15_t*)received_map->distance, (q15_t*)lidar_pkg.distance, 360);
             uint32_t current_sweep = received_map->sweep_count;
 
+            // 【新增 1】：提取精准测算的时间并赋给发送包
+            lidar_pkg.scan_time = received_map->scan_time;
+
             osMessageQueuePut(LidarFreeQueueHandle, &received_map, 0, 0);
             received_map = NULL;
 
@@ -244,9 +247,16 @@ void StartTaskPrint(void *argument) {
             // 打包并发送雷达
             lidar_pkg.checksum = Calc_Checksum((uint8_t*)lidar_pkg.distance, 720);
 
+            // 【新增 2】：更新雷达包的校验和计算长度
+            // 原本是 720 字节 (360个uint16)，现在多了个 4 字节的 float，所以是 724 字节
+            lidar_pkg.checksum = Calc_Checksum((uint8_t*)lidar_pkg.distance, 724);
+
+            // 发送长度增加 4 个字节，总计应该是 2+1+720+4+1 = 728 字节
+            // sizeof(LidarData_Packet_t) 编译器会自动算出 728
             if (Wait_UART_Ready(&huart3, 20) == 0) {
                 HAL_UART_Transmit_DMA(&huart3, (uint8_t*)&lidar_pkg, sizeof(LidarData_Packet_t));
             }
+
         }
 #else
 
