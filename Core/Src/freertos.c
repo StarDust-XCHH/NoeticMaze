@@ -52,7 +52,7 @@ osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
   .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+  .priority = (osPriority_t) osPriorityLow,
 };
 /* Definitions for MotionTask */
 osThreadId_t MotionTaskHandle;
@@ -66,21 +66,21 @@ osThreadId_t ImuTaskHandle;
 const osThreadAttr_t ImuTask_attributes = {
   .name = "ImuTask",
   .stack_size = 512 * 4,
-  .priority = (osPriority_t) osPriorityAboveNormal,
+  .priority = (osPriority_t) osPriorityHigh,
 };
 /* Definitions for LidarRouteTask */
 osThreadId_t LidarRouteTaskHandle;
 const osThreadAttr_t LidarRouteTask_attributes = {
   .name = "LidarRouteTask",
   .stack_size = 256 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+  .priority = (osPriority_t) osPriorityAboveNormal,
 };
 /* Definitions for AlgorithmBrain */
 osThreadId_t AlgorithmBrainHandle;
 const osThreadAttr_t AlgorithmBrain_attributes = {
   .name = "AlgorithmBrain",
   .stack_size = 1024 * 4,
-  .priority = (osPriority_t) osPriorityBelowNormal,
+  .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for TaskPrint */
 osThreadId_t TaskPrintHandle;

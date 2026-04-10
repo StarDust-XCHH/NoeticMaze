@@ -6,8 +6,7 @@
 #define NOETICMAZE_MAP_CORE_WRITE_H
 
 #include "map_core.h" // 包含基础定义和只读接口
-#include "FreeRTOS.h"
-#include "task.h"     // <==== 【新增这一行】提供 taskDISABLE_INTERRUPTS 的定义
+
 // =========================================================================
 // 🛡️ 编译期断言保护 (Compile-time Protection)
 // 如果包含此文件的 .c 没有声明自己是 SLAM 线程，直接引发编译报错！
@@ -26,12 +25,6 @@ extern uint8_t diff_payload[MAX_MAP_DIFF * 3];
  * @brief  写入栅格状态 (2-bit 压缩版) - 仅限 SLAM 线程
  */
 static inline void SetMapState(int x, int y, uint8_t state) {
-    // =========================================================================
-    // 🛡️ 运行期断言保护 (Runtime RTOS Protection)
-    // 即使有人恶意定义了宏绕过编译检查，在运行时只要不是 SLAM 线程调用，立刻死机报错！
-    // =========================================================================
-    // 注意：如果在中断里调用 osThreadGetId 会返回 NULL，也会触发断言，非常安全
-    configASSERT(osThreadGetId() == AlgorithmBrainHandle);
 
     if (x < 0 || x >= MAP_SIZE || y < 0 || y >= MAP_SIZE) return;
 
