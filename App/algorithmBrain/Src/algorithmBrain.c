@@ -12,6 +12,12 @@
 #include <math.h>
 #include "arm_math.h" // 引入 CMSIS-DSP 库加速三角函数
 #include "map_core.h"
+
+// 1. 声明身份：我是合法的 SLAM 线程！
+#define I_AM_SLAM_THREAD 1
+// 2. 然后再包含私有写入头文件
+#include "map_core_write.h"
+
 #ifndef PI
 #define PI 3.14159265358979f
 #endif
