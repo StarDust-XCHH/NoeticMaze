@@ -34,6 +34,7 @@ typedef struct {
     int16_t  distance[360]; // 360个点的距离 (使用 int16_t / q15_t，共 720 字节)
     // 【新增】：将雷达这一圈的真实物理耗时传给前端
     float    scan_time;      // 真实扫描耗时 (4 bytes)
+    uint32_t point_count;  // 【新增】：占用 4 字节
     uint8_t  checksum;     // 校验和
 } LidarData_Packet_t;
 

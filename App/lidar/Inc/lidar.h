@@ -40,13 +40,14 @@ typedef struct {
     uint32_t sweep_count;            // 圈数
 
     float    scan_time;              // 【新增】：本圈真实物理耗时 (秒)
+    uint32_t point_count;  // 【新增】：存储本圈实际收到的原始点数
 
 } LidarMap_t;
 
 // 雷达控制句柄
 typedef struct {
     UART_HandleTypeDef *huart;
-    uint8_t  rx_dma_buf[128];        // DMA 直接接收缓冲区
+    uint8_t  rx_dma_buf[1024];        // DMA 直接接收缓冲区
 
     // 原始字节 FIFO
     uint8_t  fifo[LIDAR_FIFO_SIZE];

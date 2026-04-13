@@ -56,7 +56,6 @@ void Lidar_Start(Lidar_HandleTypeDef *hlidar) {
 
     // 启动空闲中断 + DMA 接收 (仅启动一次，后续交由 Circular 模式硬件托管)
     HAL_UARTEx_ReceiveToIdle_DMA(hlidar->huart, hlidar->rx_dma_buf, sizeof(hlidar->rx_dma_buf));
-    __HAL_DMA_DISABLE_IT(hlidar->huart->hdmarx, DMA_IT_HT);
 }
 
 
@@ -159,6 +158,8 @@ static uint8_t Lidar_DecodeFrame_DSP(Lidar_HandleTypeDef *hlidar, const uint8_t 
             } else {
                 hlidar->current_map->scan_time = 0.1f; // 异常时保底
             }
+
+            hlidar->current_map->point_count = hlidar->points_since_last_sweep;
 
             // 清零计数器，重新开始为新的一圈计点！
             hlidar->points_since_last_sweep = 0;

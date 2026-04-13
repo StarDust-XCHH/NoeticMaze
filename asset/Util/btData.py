@@ -78,6 +78,11 @@ class RobotGUI:
             return
 
         self.running = True
+
+        # --- 新增点云点数状态变量 ---
+        self.min_point_count = 9999  # 初始设为一个大值
+        self.current_point_count = 0
+
         self.setup_ui()
         self.bind_keys()
         self.bind_mouse_events()
@@ -123,8 +128,16 @@ class RobotGUI:
         # 右侧：点云
         lidar_frame = tk.LabelFrame(center_container, text=" 原始雷达点云 (未补偿畸变) ", padx=10, pady=5)
         lidar_frame.pack(side="right", fill="both", expand=True, padx=(5, 0))
+        # 修改：点云信息布局，增加点数显示
+        info_sub_frame = tk.Frame(lidar_frame)
+        info_sub_frame.grid(row=0, column=0, sticky="w")
         self.lbl_lidar_info = tk.Label(lidar_frame, text="频率: 0.0 Hz", font=("Arial", 11, "bold"), fg="#FF8C00")
         self.lbl_lidar_info.grid(row=0, column=0, sticky="w")
+
+        # 新增：显示当前点数和记录的最小点数
+        self.lbl_points_info = tk.Label(info_sub_frame, text="当前点数: 0 | 最小: 0", font=("Arial", 10, "bold"), fg="red")
+        self.lbl_points_info.pack(side="left", padx=20)
+
         self.lidar_display = tk.Label(lidar_frame, bg="#111111", width=MAP_DIM, height=MAP_DIM)
         self.lidar_display.grid(row=2, column=0, pady=10)
 
@@ -297,12 +310,17 @@ class RobotGUI:
                         buffer = buffer[12:]
                     # 原始点云
                     elif pkg_type == TYPE_LIDAR_RAW and buffer.startswith(b'\xAA\x55'):
-                        if len(buffer) < 728: break
-                        if (sum(buffer[3:727]) & 0xFF) == buffer[727]:
+                        # 长度从 728 改为 732 (Header2 + Type1 + Dist720 + Time4 + Count4 + Sum1)
+                        if len(buffer) < 732: break
+
+                        # 校验和范围增加 4 字节点数 (从 index 3 到 731)
+                        if (sum(buffer[3:731]) & 0xFF) == buffer[731]:
                             dists = struct.unpack('<360H', buffer[3:723])
                             st = struct.unpack('<f', buffer[723:727])[0]
-                            self.root.after(0, self.update_lidar_ui, dists, st)
-                        buffer = buffer[728:]
+                            pc = struct.unpack('<I', buffer[727:731])[0] # 解析点数 (uint32)
+
+                            self.root.after(0, self.update_lidar_ui, dists, st, pc)
+                        buffer = buffer[732:]
                     # ICP增量地图
                     elif pkg_type == TYPE_MAP_ICP and buffer.startswith(b'\xAA\x55'):
                         if len(buffer) < 5: break
@@ -330,7 +348,7 @@ class RobotGUI:
 
 
     # --- UI 更新函数 ---
-    def update_lidar_ui(self, distances, scan_time):
+    def update_lidar_ui(self, distances, scan_time, point_count):
         img = np.zeros((MAP_DIM, MAP_DIM, 3), dtype=np.uint8)
         center = MAP_DIM // 2
         max_mm = 6000.0
@@ -351,6 +369,18 @@ class RobotGUI:
         self.lidar_image_tk = ImageTk.PhotoImage(image=pil_img)
         self.lidar_display.config(image=self.lidar_image_tk)
         self.lbl_lidar_info.config(text=f"耗时: {scan_time:.4f}s | 频率: {(1/scan_time if scan_time>0 else 0):.1f}Hz")
+
+        # 逻辑：更新最小点数记录（跳过开机可能不准的前几帧）
+        if point_count > 0:
+            if point_count < self.min_point_count:
+                self.min_point_count = point_count
+
+            # 变色提醒：如果当前点数掉得厉害，显示红色
+            color = "red" if point_count < (self.min_point_count * 0.95) else "darkgreen"
+            self.lbl_points_info.config(
+                text=f"当前点数: {point_count} | 最小: {self.min_point_count}",
+                fg=color
+            )
 
     def update_map_ui(self, icp_x, icp_y, icp_theta, diff_count, payload_len, diff_pts):
         self.current_pose = (icp_x, icp_y, icp_theta)

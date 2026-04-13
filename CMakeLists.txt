@@ -37,6 +37,7 @@ enable_language(C ASM)
 add_compile_options(
         -mfloat-abi=hard
         -mfpu=fpv4-sp-d16
+
 )
 add_link_options(
         -mfloat-abi=hard
