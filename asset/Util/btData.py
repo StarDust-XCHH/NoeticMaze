@@ -8,6 +8,9 @@ import numpy as np
 import cv2
 from PIL import Image, ImageTk
 from collections import deque
+import socket
+import pickle
+import zlib
 
 # --- 协议配置 ---
 SERIAL_PORT = 'COM17'
@@ -17,7 +20,7 @@ TYPE_CMD = 0x03
 TYPE_ACK = 0x04
 TYPE_STATUS = 0x01
 TYPE_MAP_ICP = 0x05
-TYPE_LIDAR_RAW = 0x02  # 【新增】原始雷达帧协议类型
+TYPE_LIDAR_RAW = 0x02
 
 # --- PID 收敛评估阈值 ---
 CONVERGENCE_THRESHOLD = 2.0
@@ -28,40 +31,44 @@ MAP_DIM = 600      # 画布放大到 600x600
 MAP_RES = 0.02     # 2cm 分辨率
 MAP_OFFSET = 3.5   # 中心偏移
 STM32_MAP_SIZE = 250
-MAP_PADDING = (MAP_DIM - STM32_MAP_SIZE) // 2  # 计算布局偏移: 175
+MAP_PADDING = (MAP_DIM - STM32_MAP_SIZE) // 2
+
+# --- 导航服务端配置 ---
+NAV_SERVER_IP = '127.0.0.1'
+NAV_SERVER_PORT = 8831
 
 class RobotGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("STM32 机器人控制台 (点云畸变观测 & ICP交互版)")
-        # 【修改】大幅加宽窗口以容纳双屏并排显示
+        self.root.title("STM32 机器人控制台 (点云观测 & 自动导航整合版)")
         self.root.geometry("1280x1020")
 
-        # 地图渲染状态初始化
+        # 状态初始化
         self.grid = np.full((MAP_DIM, MAP_DIM), 127, dtype=np.uint8)
         self.trajectory = deque(maxlen=2000)
         self.map_image_tk = None
-        self.lidar_image_tk = None # 【新增】原始雷达图像缓冲
-
-        # 缓存渲染的基础地图，用于解耦数据更新和鼠标交互重绘
+        self.lidar_image_tk = None
         self.cached_color_map = cv2.flip(cv2.cvtColor(self.grid, cv2.COLOR_GRAY2RGB), 0)
 
-        # 视图变换状态 (缩放、平移、旋转)
+        # 视图变换
         self.view_zoom = 1.0
         self.view_offset_x = 0.0
         self.view_offset_y = 0.0
         self.view_angle = 0.0
-
         self.is_panning = False
         self.is_rotating = False
-        self.pan_start_x = 0
-        self.pan_start_y = 0
-        self.rot_start_x = 0
 
-        # 目标速度变量与频率控制变量
+        # 运动状态
         self.target_yaw_rate = 0.0
         self.target_linear_vel = 0.0
         self.last_send_time = 0.0
+
+        # 导航状态
+        self.current_pose = (0.0, 0.0, 0.0) # (x, y, theta)
+        self.nav_goal = None                # 目标点 (x, y)
+        self.auto_nav_enabled = False
+        self.nav_path = []                  # 后端传回的规划路径
+        self.cost_mask = None               # 后端传回的膨胀地图
 
         try:
             self.ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.01)
@@ -74,390 +81,280 @@ class RobotGUI:
         self.setup_ui()
         self.bind_keys()
         self.bind_mouse_events()
-
-        # 初始化渲染第一帧
         self.render_map()
-
         self.root.focus_set()
 
+        # 线程启动
         self.recv_thread = threading.Thread(target=self.receive_handler, daemon=True)
         self.recv_thread.start()
+        self.nav_client_thread = threading.Thread(target=self.nav_client_task, daemon=True)
+        self.nav_client_thread.start()
 
     def setup_ui(self):
         # 1. 状态显示区
-        status_frame = tk.LabelFrame(self.root, text=" 机器人状态 (0x55AA - TYPE: 0x01) ", padx=10, pady=10)
+        status_frame = tk.LabelFrame(self.root, text=" 机器人状态 ", padx=10, pady=10)
         status_frame.pack(fill="x", padx=10, pady=5)
 
         self.lbl_yaw = tk.Label(status_frame, text="Yaw: 0.00°", font=("Arial", 12, "bold"), fg="blue")
         self.lbl_yaw.grid(row=0, column=0, padx=10, rowspan=2)
-
         self.lbl_yaw_rate = tk.Label(status_frame, text="实际角速度: 0.00 °/s", font=("Arial", 10, "bold"), fg="darkgreen")
         self.lbl_yaw_rate.grid(row=0, column=1, padx=10, sticky="w")
-
-        self.lbl_target_rate = tk.Label(status_frame, text="预期角速度: 0.00 °/s", font=("Arial", 10), fg="gray")
-        self.lbl_target_rate.grid(row=1, column=1, padx=10, sticky="w")
-
-        self.lbl_error = tk.Label(status_frame, text="偏差(Error): 0.00 °/s", font=("Arial", 10, "bold"), fg="red")
-        self.lbl_error.grid(row=2, column=1, padx=10, sticky="w", pady=(5, 0))
-
-        self.lbl_convergence = tk.Label(status_frame, text="收敛状况: 等待数据", font=("Arial", 10, "bold"), fg="black")
-        self.lbl_convergence.grid(row=3, column=1, padx=10, sticky="w")
-
         self.lbl_pos = tk.Label(status_frame, text="里程计 X: 0.00  Y: 0.00", font=("Arial", 10))
         self.lbl_pos.grid(row=0, column=2, padx=10)
-
         self.lbl_vel = tk.Label(status_frame, text="线速度: 0.00 m/s", font=("Arial", 10))
         self.lbl_vel.grid(row=1, column=2, padx=10)
+        self.lbl_convergence = tk.Label(status_frame, text="收敛状况: 等待数据", font=("Arial", 10))
+        self.lbl_convergence.grid(row=1, column=1, padx=10, sticky="w")
 
-        self.lbl_sweep = tk.Label(status_frame, text="Sweep: 0", font=("Arial", 10))
-        self.lbl_sweep.grid(row=0, column=3, padx=10)
-
-        # =========================================================================
-        # 【新增】双屏并排布局区
+        # 2. 双屏布局区
         center_container = tk.Frame(self.root)
         center_container.pack(fill="x", padx=10, pady=5)
 
-        # 左侧：ICP 累积地图面板
-        map_title = " ICP位姿与地图增量 (左键平移 | 右键旋转 | 滚轮缩放) "
-        map_frame = tk.LabelFrame(center_container, text=map_title, padx=10, pady=5)
+        # 左侧：ICP 地图
+        map_frame = tk.LabelFrame(center_container, text=" ICP地图 (左平移|右旋转|滚轮缩放|Shift+左键设目标) ", padx=10, pady=5)
         map_frame.pack(side="left", fill="both", expand=True, padx=(0, 5))
-
-        self.lbl_icp_pose = tk.Label(map_frame, text="ICP 位姿 -> X: 0.000, Y: 0.000, Theta: 0.000", font=("Arial", 11, "bold"), fg="purple")
-        self.lbl_icp_pose.grid(row=0, column=0, padx=10, sticky="w")
-
-        self.lbl_map_count = tk.Label(map_frame, text="最新接收栅格数: 0 (共 0 字节)", font=("Arial", 10))
-        self.lbl_map_count.grid(row=1, column=0, padx=10, sticky="w")
-
+        self.lbl_icp_pose = tk.Label(map_frame, text="ICP 位姿 -> X: 0.000, Y: 0.000", font=("Arial", 11, "bold"), fg="purple")
+        self.lbl_icp_pose.grid(row=0, column=0, sticky="w")
+        self.lbl_nav_status = tk.Label(map_frame, text="导航目标: 未设置 | 状态: 手动", font=("Arial", 10, "bold"), fg="#FF8C00")
+        self.lbl_nav_status.grid(row=1, column=0, sticky="w")
         self.map_display = tk.Label(map_frame, bg="black", width=MAP_DIM, height=MAP_DIM, cursor="crosshair")
-        self.map_display.grid(row=2, column=0, pady=10, padx=10)
+        self.map_display.grid(row=2, column=0, pady=10)
 
-        # 右侧：原始雷达点云面板
-        lidar_frame = tk.LabelFrame(center_container, text=" 原始雷达点云观测 (TYPE: 0x02) ", padx=10, pady=5)
+        # 右侧：点云
+        lidar_frame = tk.LabelFrame(center_container, text=" 原始雷达点云 (未补偿畸变) ", padx=10, pady=5)
         lidar_frame.pack(side="right", fill="both", expand=True, padx=(5, 0))
-
-        self.lbl_lidar_info = tk.Label(lidar_frame, text="物理扫描耗时: 0.0000 s | 真实频率: 0.0 Hz", font=("Arial", 11, "bold"), fg="#FF8C00")
-        self.lbl_lidar_info.grid(row=0, column=0, padx=10, sticky="w")
-
-        self.lbl_lidar_desc = tk.Label(lidar_frame, text="本面板展示未经过畸变补偿的纯原始坐标极点", font=("Arial", 10), fg="gray")
-        self.lbl_lidar_desc.grid(row=1, column=0, padx=10, sticky="w")
-
+        self.lbl_lidar_info = tk.Label(lidar_frame, text="频率: 0.0 Hz", font=("Arial", 11, "bold"), fg="#FF8C00")
+        self.lbl_lidar_info.grid(row=0, column=0, sticky="w")
         self.lidar_display = tk.Label(lidar_frame, bg="#111111", width=MAP_DIM, height=MAP_DIM)
-        self.lidar_display.grid(row=2, column=0, pady=10, padx=10)
-        # =========================================================================
+        self.lidar_display.grid(row=2, column=0, pady=10)
 
-        # 3. 键盘控制区
-        control_frame = tk.LabelFrame(self.root, text=" 键盘控制区 (请保持英文输入法) ", padx=10, pady=5)
+        # 3. 控制区
+        control_frame = tk.LabelFrame(self.root, text=" 导航与手动控制 ", padx=10, pady=5)
         control_frame.pack(fill="x", padx=10, pady=5)
+        self.btn_auto_nav = tk.Button(control_frame, text="开启自动导航", bg="lightgray", width=15, command=self.toggle_auto_nav)
+        self.btn_auto_nav.grid(row=0, column=0, padx=10)
+        self.lbl_cmd_yaw = tk.Label(control_frame, text="下发角速: 0 °/s", font=("Arial", 10))
+        self.lbl_cmd_yaw.grid(row=0, column=1, padx=10)
+        self.lbl_cmd_vel = tk.Label(control_frame, text="下发线速: 0.00 m/s", font=("Arial", 10))
+        self.lbl_cmd_vel.grid(row=0, column=2, padx=10)
 
-        instruction_text = "操作说明: [W]线速度+0.02 | [S]线速度-0.02 | [A]角速度+10 | [D]角速度-10 | [空格]紧急停止"
-        tk.Label(control_frame, text=instruction_text, font=("Arial", 10, "bold")).grid(row=0, column=0, columnspan=4, pady=5)
+        # 4. 日志
+        self.log_area = scrolledtext.ScrolledText(self.root, state='disabled', height=6)
+        self.log_area.pack(fill="both", expand=True, padx=10, pady=5)
 
-        tk.Label(control_frame, text="下发角速度:").grid(row=1, column=0, sticky="e", padx=(20, 0))
-        self.lbl_cmd_yaw = tk.Label(control_frame, text="0 °/s", font=("Arial", 12, "bold"), fg="blue", width=8, anchor="w")
-        self.lbl_cmd_yaw.grid(row=1, column=1, sticky="w")
+    # --- 导航交互逻辑 ---
+    def toggle_auto_nav(self):
+        if not self.auto_nav_enabled:
+            if self.nav_goal is None:
+                messagebox.showwarning("提示", "请先按住 Shift+左键 设定目标点")
+                return
+            self.auto_nav_enabled = True
+            self.btn_auto_nav.config(text="停止自动导航", bg="red", fg="white")
+            self.write_log(">>> 自动导航模式开启", "green")
+        else:
+            self.auto_nav_enabled = False
+            self.nav_path = []
+            self.cost_mask = None
+            self.btn_auto_nav.config(text="开启自动导航", bg="lightgray", fg="black")
+            self.stop_robot()
+            self.render_map()
+            self.write_log(">>> 自动导航模式关闭")
+        self.update_nav_ui()
 
-        tk.Label(control_frame, text="下发线速度:").grid(row=1, column=2, sticky="e", padx=(20, 0))
-        self.lbl_cmd_vel = tk.Label(control_frame, text="0.00 m/s", font=("Arial", 12, "bold"), fg="blue", width=8, anchor="w")
-        self.lbl_cmd_vel.grid(row=1, column=3, sticky="w")
+    def update_nav_ui(self):
+        goal_str = f"({self.nav_goal[0]:.2f}, {self.nav_goal[1]:.2f})" if self.nav_goal else "未设置"
+        status_str = "自动导航中" if self.auto_nav_enabled else "手动控制"
+        self.lbl_nav_status.config(text=f"目标: {goal_str} | 状态: {status_str}")
 
-        # 4. 日志回显区
-        log_frame = tk.LabelFrame(self.root, text=" 系统日志 ")
-        log_frame.pack(fill="both", expand=True, padx=10, pady=5)
+    def set_nav_goal(self, event):
+        center = (MAP_DIM // 2, MAP_DIM // 2)
+        M = cv2.getRotationMatrix2D(center, self.view_angle, self.view_zoom)
+        M[0, 2] += self.view_offset_x
+        M[1, 2] += self.view_offset_y
+        inv_M = cv2.invertAffineTransform(M)
+        pt_screen = np.array([event.x, event.y, 1.0])
+        pt_map = inv_M.dot(pt_screen)
+        px_x, px_y = pt_map[0], MAP_DIM - pt_map[1]
+        phys_x = px_x * MAP_RES - MAP_OFFSET
+        phys_y = px_y * MAP_RES - MAP_OFFSET
+        self.nav_goal = (phys_x, phys_y)
+        self.write_log(f"设置目标点: X={phys_x:.2f}, Y={phys_y:.2f}")
 
-        self.log_area = scrolledtext.ScrolledText(log_frame, state='disabled', height=5)
-        self.log_area.pack(fill="both", expand=True)
+        if not self.auto_nav_enabled:
+            self.auto_nav_enabled = True
+            self.btn_auto_nav.config(text="停止自动导航", bg="red", fg="white")
+            self.write_log(">>> 自动导航模式开启", "green")
 
-    # ========================== 鼠标交互事件 (仅针对左侧地图) ==========================
+        self.update_nav_ui()
+        self.render_map()
+
+    # --- 视觉与渲染 ---
     def bind_mouse_events(self):
         self.map_display.bind("<MouseWheel>", self.on_mouse_wheel)
-        self.map_display.bind("<Button-4>", self.on_mouse_wheel)
-        self.map_display.bind("<Button-5>", self.on_mouse_wheel)
-
         self.map_display.bind("<ButtonPress-1>", self.on_pan_start)
         self.map_display.bind("<B1-Motion>", self.on_pan_drag)
         self.map_display.bind("<ButtonRelease-1>", self.on_pan_end)
-
         self.map_display.bind("<ButtonPress-3>", self.on_rot_start)
         self.map_display.bind("<B3-Motion>", self.on_rot_drag)
         self.map_display.bind("<ButtonRelease-3>", self.on_rot_end)
-
         self.map_display.bind("<Double-Button-1>", self.reset_view)
+        self.map_display.bind("<Shift-ButtonPress-1>", self.set_nav_goal)
 
     def on_mouse_wheel(self, event):
-        if event.delta > 0 or getattr(event, 'num', 0) == 4:
-            self.view_zoom *= 1.15
-        elif event.delta < 0 or getattr(event, 'num', 0) == 5:
-            self.view_zoom /= 1.15
+        if event.delta > 0: self.view_zoom *= 1.15
+        else: self.view_zoom /= 1.15
         self.render_map()
 
-    def on_pan_start(self, event):
-        self.is_panning = True
-        self.pan_start_x = event.x
-        self.pan_start_y = event.y
-
+    def on_pan_start(self, event): self.is_panning = True; self.pan_start_x, self.pan_start_y = event.x, event.y
     def on_pan_drag(self, event):
         if self.is_panning:
-            dx = event.x - self.pan_start_x
-            dy = event.y - self.pan_start_y
-            self.view_offset_x += dx
-            self.view_offset_y += dy
-            self.pan_start_x = event.x
-            self.pan_start_y = event.y
+            self.view_offset_x += event.x - self.pan_start_x
+            self.view_offset_y += event.y - self.pan_start_y
+            self.pan_start_x, self.pan_start_y = event.x, event.y
             self.render_map()
-
-    def on_pan_end(self, event):
-        self.is_panning = False
-
-    def on_rot_start(self, event):
-        self.is_rotating = True
-        self.rot_start_x = event.x
-
+    def on_pan_end(self, event): self.is_panning = False
+    def on_rot_start(self, event): self.is_rotating = True; self.rot_start_x = event.x
     def on_rot_drag(self, event):
         if self.is_rotating:
-            dx = event.x - self.rot_start_x
-            self.view_angle -= dx * 0.5
+            self.view_angle -= (event.x - self.rot_start_x) * 0.5
             self.rot_start_x = event.x
             self.render_map()
-
-    def on_rot_end(self, event):
-        self.is_rotating = False
-
+    def on_rot_end(self, event): self.is_rotating = False
     def reset_view(self, event=None):
-        self.view_zoom = 1.0
-        self.view_offset_x = 0.0
-        self.view_offset_y = 0.0
-        self.view_angle = 0.0
+        self.view_zoom, self.view_offset_x, self.view_offset_y, self.view_angle = 1.0, 0.0, 0.0, 0.0
         self.render_map()
 
     def render_map(self):
-        if self.cached_color_map is None:
-            return
+        if self.cached_color_map is None: return
+        display_map = self.cached_color_map.copy()
 
+        # =======================
+        # 新增：直接渲染导航层数据
+        # =======================
+        # 1. 渲染膨胀地图层
+        if self.cost_mask is not None:
+            # 必须和 cached_color_map 一起翻转Y轴
+            flipped_mask = cv2.flip(self.cost_mask, 0)
+            # 深红色标记危险区域 [B, G, R] = [34, 34, 102]
+            display_map[flipped_mask == 1] = [102, 34, 34]
+
+            # 2. 渲染规划好的路径
+        if self.nav_path and len(self.nav_path) > 1:
+            pts = []
+            for p in self.nav_path:
+                px = int((p[0] + MAP_OFFSET) / MAP_RES)
+                py = int((p[1] + MAP_OFFSET) / MAP_RES)
+                # 镜像翻转 Y 轴匹配当前显示层
+                flipped_py = MAP_DIM - py
+                pts.append([px, flipped_py])
+            pts = np.array(pts, np.int32).reshape((-1, 1, 2))
+            cv2.polylines(display_map, [pts], False, (0, 255, 0), 2)
+
+        # 3. 渲染目标点 (Target Goal)
+        if self.nav_goal:
+            gx_px = int((self.nav_goal[0] + MAP_OFFSET) / MAP_RES)
+            gy_px = int((self.nav_goal[1] + MAP_OFFSET) / MAP_RES)
+            gy_px_flipped = MAP_DIM - gy_px
+            cv2.drawMarker(display_map, (gx_px, gy_px_flipped), (0, 0, 255), markerType=cv2.MARKER_CROSS, markerSize=15, thickness=2)
+
+        # 视角仿射变换输出
         center = (MAP_DIM // 2, MAP_DIM // 2)
         M = cv2.getRotationMatrix2D(center, self.view_angle, self.view_zoom)
-
         M[0, 2] += self.view_offset_x
         M[1, 2] += self.view_offset_y
-
-        transformed_map = cv2.warpAffine(self.cached_color_map, M, (MAP_DIM, MAP_DIM), borderValue=(127, 127, 127))
-
-        img = Image.fromarray(transformed_map)
+        transformed = cv2.warpAffine(display_map, M, (MAP_DIM, MAP_DIM), borderValue=(127, 127, 127))
+        img = Image.fromarray(transformed)
         self.map_image_tk = ImageTk.PhotoImage(image=img)
         self.map_display.config(image=self.map_image_tk)
-    # =========================================================================
 
-    def bind_keys(self):
-        self.root.bind('<KeyPress-w>', lambda e: self.change_speed(v_delta=0.02))
-        self.root.bind('<KeyPress-W>', lambda e: self.change_speed(v_delta=0.02))
-        self.root.bind('<KeyPress-s>', lambda e: self.change_speed(v_delta=-0.02))
-        self.root.bind('<KeyPress-S>', lambda e: self.change_speed(v_delta=-0.02))
-
-        self.root.bind('<KeyPress-a>', lambda e: self.change_speed(w_delta=10.0))
-        self.root.bind('<KeyPress-A>', lambda e: self.change_speed(w_delta=10.0))
-        self.root.bind('<KeyPress-d>', lambda e: self.change_speed(w_delta=-10.0))
-        self.root.bind('<KeyPress-D>', lambda e: self.change_speed(w_delta=-10.0))
-
-        self.root.bind('<space>', lambda e: self.stop_robot())
-
-    def change_speed(self, v_delta=0.0, w_delta=0.0):
-        current_time = time.time()
-        if current_time - self.last_send_time < 0.05:
-            return
-
-        new_v = round(self.target_linear_vel + v_delta, 2)
-        new_w = round(self.target_yaw_rate + w_delta, 1)
-
-        new_v = max(-0.1, min(0.1, new_v))
-        new_w = max(-360.0, min(360.0, new_w))
-
-        if new_v != self.target_linear_vel or new_w != self.target_yaw_rate:
-            self.target_linear_vel = new_v
-            self.target_yaw_rate = new_w
-            self.update_cmd_ui()
-            self.send_command()
-            self.last_send_time = current_time
-
-    def stop_robot(self):
-        if self.target_linear_vel != 0.0 or self.target_yaw_rate != 0.0:
-            self.target_linear_vel = 0.0
-            self.target_yaw_rate = 0.0
-            self.update_cmd_ui()
-            self.send_command()
-            self.write_log("🚨 已触发急停: 速度归零", color="red")
-
-    def update_cmd_ui(self):
-        self.lbl_cmd_yaw.config(text=f"{self.target_yaw_rate} °/s")
-        self.lbl_cmd_vel.config(text=f"{self.target_linear_vel:.2f} m/s")
-
-    def write_log(self, msg, color="black"):
-        self.log_area.configure(state='normal')
-        self.log_area.insert(tk.END, f"[{time.strftime('%H:%M:%S')}] {msg}\n")
-        self.log_area.see(tk.END)
-        self.log_area.configure(state='disabled')
-
-    def send_command(self):
-        try:
-            yaw_rate = self.target_yaw_rate
-            linear_vel = self.target_linear_vel
-            packet = struct.pack('<HBff', HEX_SEND_HEADER, TYPE_CMD, yaw_rate, linear_vel)
-            checksum = sum(packet) & 0xFF
-            full_packet = packet + struct.pack('<B', checksum)
-            self.ser.write(full_packet)
-            self.write_log(f"发送指令 -> 角速度: {yaw_rate}°/s, 线速度: {linear_vel} m/s")
-        except Exception as e:
-            self.write_log(f"发送串口错误: {e}")
-
-    # ========================== 核心数据接收与分发 ==========================
+    # --- 核心解析逻辑 ---
     def receive_handler(self):
         buffer = b""
         while self.running:
             if self.ser.in_waiting > 0:
                 buffer += self.ser.read(self.ser.in_waiting)
-
-                if len(buffer) > 16384:
-                    buffer = buffer[-16384:]
+                if len(buffer) > 20000: buffer = buffer[-20000:]
 
                 while len(buffer) >= 6:
                     idx_55aa = buffer.find(b'\xAA\x55')
                     idx_5a5a = buffer.find(b'\x5A\x5A')
-
                     indices = [i for i in [idx_55aa, idx_5a5a] if i != -1]
-                    if not indices:
-                        buffer = buffer[-1:]
-                        break
+                    if not indices: buffer = buffer[-1:]; break
 
                     first_idx = min(indices)
-                    if first_idx > 0:
-                        buffer = buffer[first_idx:]
-                        continue
+                    if first_idx > 0: buffer = buffer[first_idx:]; continue
 
                     pkg_type = buffer[2]
-
+                    # 状态包
                     if pkg_type == TYPE_STATUS and buffer.startswith(b'\xAA\x55'):
                         if len(buffer) < 32: break
-                        try:
-                            payload = buffer[3:31]
-                            d = struct.unpack('<Iffffff', payload)
-                            self.root.after(0, self.update_status_ui, d[4], d[5], d[6], d[1], d[2], d[3], d[0])
-                        except Exception as e:
-                            pass
+                        d = struct.unpack('<Iffffff', buffer[3:31])
+                        self.root.after(0, self.update_status_ui, d[4], d[5], d[6], d[1], d[2], d[3], d[0])
                         buffer = buffer[32:]
-
+                    # 指令回显
                     elif pkg_type == TYPE_ACK and buffer.startswith(b'\x5A\x5A'):
                         if len(buffer) < 12: break
-                        try:
-                            _, _, r_yaw_rate, r_linear_vel, _ = struct.unpack('<HBffB', buffer[:12])
-                            self.root.after(0, self.write_log, f"收到回显 ✔: 角速度={r_yaw_rate:.1f}°/s, 线速度={r_linear_vel:.2f}m/s")
-                        except Exception as e:
-                            pass
                         buffer = buffer[12:]
-
-                    # 【新增】解析原始雷达数据 (728 字节新协议)
+                    # 原始点云
                     elif pkg_type == TYPE_LIDAR_RAW and buffer.startswith(b'\xAA\x55'):
-                        if len(buffer) < 728:
-                            break
-
-                        # Checksum 计算范围：Payload (360个uint16 + 1个float)
-                        expected_chk = sum(buffer[3:727]) & 0xFF
-                        actual_chk = buffer[727]
-
-                        if expected_chk == actual_chk:
-                            try:
-                                # 解析 360 个距离数据 (720 字节) 和 1 个耗时数据 (4 字节)
-                                distances = struct.unpack('<360H', buffer[3:723])
-                                scan_time = struct.unpack('<f', buffer[723:727])[0]
-                                self.root.after(0, self.update_lidar_ui, distances, scan_time)
-                            except Exception as e:
-                                print(f"Raw Lidar Parse Error: {e}")
-
+                        if len(buffer) < 728: break
+                        if (sum(buffer[3:727]) & 0xFF) == buffer[727]:
+                            dists = struct.unpack('<360H', buffer[3:723])
+                            st = struct.unpack('<f', buffer[723:727])[0]
+                            self.root.after(0, self.update_lidar_ui, dists, st)
                         buffer = buffer[728:]
-
-                    # 解析 ICP 增量地图 (保留不变)
+                    # ICP增量地图
                     elif pkg_type == TYPE_MAP_ICP and buffer.startswith(b'\xAA\x55'):
                         if len(buffer) < 5: break
-                        data_len = struct.unpack('<H', buffer[3:5])[0]
-                        total_tx_size = 5 + data_len + 1
-
-                        if len(buffer) < total_tx_size:
-                            break
-
+                        d_len = struct.unpack('<H', buffer[3:5])[0]
+                        total = 5 + d_len + 1
+                        if len(buffer) < total: break
                         try:
-                            payload_head = buffer[5 : 5+14]
-                            icp_x, icp_y, icp_theta, diff_count = struct.unpack('<fffH', payload_head)
+                            ix, iy, it, dc = struct.unpack('<fffH', buffer[5:19])
+                            pts = np.frombuffer(buffer[19:19+dc*3], dtype=np.uint8).reshape(-1, 3) if dc > 0 else np.array([])
+                            self.root.after(0, self.update_map_ui, ix, iy, it, dc, d_len, pts)
+                        except: pass
+                        buffer = buffer[total:]
+                    else: buffer = buffer[2:]
+            time.sleep(0.001)
 
-                            if diff_count > 0:
-                                diff_bytes = buffer[19 : 19 + diff_count*3]
-                                diff_pts = np.frombuffer(diff_bytes, dtype=np.uint8).reshape(-1, 3)
-                            else:
-                                diff_pts = np.array([])
 
-                            self.root.after(0, self.update_map_ui, icp_x, icp_y, icp_theta, diff_count, data_len, diff_pts)
+    def update_status_ui(self, yaw, yaw_rate, target_yaw_rate, x, y, vel, sweep):
+        self.lbl_yaw.config(text=f"Yaw: {yaw:.2f}°")
+        self.lbl_yaw_rate.config(text=f"实际角速: {yaw_rate:.2f} °/s")
+        self.lbl_pos.config(text=f"里程 X: {x:.2f} Y: {y:.2f}")
+        self.lbl_vel.config(text=f"线速: {vel:.2f} m/s")
+        err = abs(target_yaw_rate - yaw_rate)
+        c_text = "✅ 已收敛" if err < CONVERGENCE_THRESHOLD else "⚠️ 调节中"
+        self.lbl_convergence.config(text=f"收敛状况: {c_text}", fg=("green" if err < CONVERGENCE_THRESHOLD else "orange"))
 
-                        except Exception as e:
-                            pass
 
-                        buffer = buffer[total_tx_size:]
-
-                    else:
-                        buffer = buffer[2:]
-
-            time.sleep(0.002)
-
-    # ========================== 【新增】原始雷达点云极速渲染 ==========================
+    # --- UI 更新函数 ---
     def update_lidar_ui(self, distances, scan_time):
-        # 1. 更新顶部文字信息
-        freq = (1.0 / scan_time) if scan_time > 0.001 else 0.0
-        self.lbl_lidar_info.config(text=f"物理扫描耗时: {scan_time:.4f} s | 真实频率: {freq:.1f} Hz")
-
-        # 2. 准备黑底画布
         img = np.zeros((MAP_DIM, MAP_DIM, 3), dtype=np.uint8)
         center = MAP_DIM // 2
+        max_mm = 6000.0
+        scale = (MAP_DIM / 2) / max_mm
 
-        # 3. 绘制同心圆距离参考线 (1米~5米)
-        max_dist_mm = 6000.0   # 设置画布边缘对应最大量程 6 米
-        scale = (MAP_DIM / 2) / max_dist_mm
-        for r_m in range(1, 6):
-            r_px = int(r_m * 1000 * scale)
-            cv2.circle(img, (center, center), r_px, (40, 40, 40), 1)
-        cv2.line(img, (center, 0), (center, MAP_DIM), (40, 40, 40), 1)
-        cv2.line(img, (0, center), (MAP_DIM, center), (40, 40, 40), 1)
+        d_arr = np.array(distances)
+        ang = np.deg2rad(np.arange(360))
+        mask = (d_arr > 30) & (d_arr < max_mm)
+        rx = d_arr[mask] * np.cos(ang[mask])
+        ry = d_arr[mask] * np.sin(ang[mask])
+        ix = (center - ry * scale).astype(np.int32)
+        iy = (center - rx * scale).astype(np.int32)
+        valid = (ix>=0) & (ix<MAP_DIM) & (iy>=0) & (iy<MAP_DIM)
+        img[iy[valid], ix[valid]] = (0, 255, 0)
+        cv2.circle(img, (center, center), 3, (255,0,0), -1)
 
-        # 4. 向量化计算极坐标到像素系的映射
-        dist_array = np.array(distances)
-        angles_rad = np.deg2rad(np.arange(360))
-
-        # 过滤无效噪点
-        valid_mask = (dist_array > 30) & (dist_array < max_dist_mm)
-        valid_dists = dist_array[valid_mask]
-        valid_angles = angles_rad[valid_mask]
-
-        # 物理系：X轴正向(车头)为0度，逆时针角度增加。映射到图像系：
-        # 车头朝上 (-Y方向), 车左朝左 (-X方向)
-        robot_x = valid_dists * np.cos(valid_angles)
-        robot_y = valid_dists * np.sin(valid_angles)
-
-        img_x = (center - robot_y * scale).astype(np.int32)
-        img_y = (center - robot_x * scale).astype(np.int32)
-
-        in_bounds = (img_x >= 0) & (img_x < MAP_DIM) & (img_y >= 0) & (img_y < MAP_DIM)
-        img_x = img_x[in_bounds]
-        img_y = img_y[in_bounds]
-
-        # 5. 打点 (RGB模式：绿色)
-        img[img_y, img_x] = (0, 255, 0)
-
-        # 6. 画一个红色的车头中心标志
-        cv2.circle(img, (center, center), 4, (255, 0, 0), -1)
-
-        # 7. 刷新到 UI
-        img_pil = Image.fromarray(img)
-        self.lidar_image_tk = ImageTk.PhotoImage(image=img_pil)
+        pil_img = Image.fromarray(img)
+        self.lidar_image_tk = ImageTk.PhotoImage(image=pil_img)
         self.lidar_display.config(image=self.lidar_image_tk)
-    # =========================================================================
+        self.lbl_lidar_info.config(text=f"耗时: {scan_time:.4f}s | 频率: {(1/scan_time if scan_time>0 else 0):.1f}Hz")
 
     def update_map_ui(self, icp_x, icp_y, icp_theta, diff_count, payload_len, diff_pts):
-        self.lbl_icp_pose.config(text=f"ICP 匹配位姿 -> X: {icp_x:.3f}, Y: {icp_y:.3f}, Theta: {icp_theta:.3f} rad")
-        self.lbl_map_count.config(text=f"最新接收栅格数: {diff_count} 个 (当前包 Payload 长度: {payload_len} 字节)")
+        self.current_pose = (icp_x, icp_y, icp_theta)
+        self.lbl_icp_pose.config(text=f"ICP X: {icp_x:.3f}, Y: {icp_y:.3f}, T: {icp_theta:.2f}")
 
         rgx = int((icp_x + MAP_OFFSET) / MAP_RES)
         rgy = int((icp_y + MAP_OFFSET) / MAP_RES)
@@ -508,31 +405,102 @@ class RobotGUI:
             lty = int(rgy + 8 * np.sin(icp_theta))
             cv2.line(color_map, (rgx, rgy), (ltx, lty), (0, 255, 0), 2)
 
-        flipped_map = cv2.flip(color_map, 0)
-        self.cached_color_map = flipped_map
+        self.cached_color_map = cv2.flip(color_map, 0)
         self.render_map()
 
-    def update_status_ui(self, yaw, yaw_rate, target_yaw_rate, x, y, vel, sweep):
-        self.lbl_yaw.config(text=f"Yaw: {yaw:.2f}°")
-        self.lbl_yaw_rate.config(text=f"实际角速度: {yaw_rate:.2f} °/s")
-        self.lbl_target_rate.config(text=f"预期角速度: {target_yaw_rate:.2f} °/s")
-        self.lbl_pos.config(text=f"里程计 X: {x:.2f}  Y: {y:.2f}")
-        self.lbl_vel.config(text=f"线速度: {vel:.2f} m/s")
-        self.lbl_sweep.config(text=f"Sweep: {sweep}")
+    # --- 网络与控制 ---
+    def nav_client_task(self):
+        while self.running:
+            if self.auto_nav_enabled and self.nav_goal:
+                try:
+                    with socket.create_connection((NAV_SERVER_IP, NAV_SERVER_PORT), timeout=2.0) as s:
+                        print("[+] 成功连接到导航服务端！")
 
-        error = target_yaw_rate - yaw_rate
-        abs_error = abs(error)
+                        while self.auto_nav_enabled and self.running:
+                            data = {'pose': self.current_pose, 'goal': self.nav_goal, 'map': self.grid}
+                            payload = zlib.compress(pickle.dumps(data))
+                            s.sendall(struct.pack('<I', len(payload)) + payload)
 
-        self.lbl_error.config(text=f"偏差(Error): {error:+.2f} °/s")
+                            header = s.recv(4)
+                            if not header:
+                                print("[-] 服务端主动断开了连接")
+                                break
 
-        if target_yaw_rate == 0.0 and abs_error < CONVERGENCE_THRESHOLD:
-            self.lbl_convergence.config(text="收敛状况: 已静止", fg="green")
-        elif abs_error <= CONVERGENCE_THRESHOLD:
-            self.lbl_convergence.config(text="收敛状况: ✅ 已收敛", fg="green")
-        elif abs_error <= ADJUSTING_THRESHOLD:
-            self.lbl_convergence.config(text="收敛状况: ⚠️ 调节中...", fg="#FF8C00")
-        else:
-            self.lbl_convergence.config(text="收敛状况: ❌ 偏差过大", fg="red")
+                            resp_len = struct.unpack('<I', header)[0]
+                            resp_data = bytearray()
+                            while len(resp_data) < resp_len:
+                                packet = s.recv(resp_len - len(resp_data))
+                                if not packet:
+                                    break
+                                resp_data.extend(packet)
+
+                            if len(resp_data) == resp_len:
+                                # 注意这里新增了 zlib 解压逻辑
+                                resp = pickle.loads(zlib.decompress(resp_data))
+                                self.target_linear_vel = round(resp.get('v', 0.0), 2)
+                                self.target_yaw_rate = round(resp.get('w', 0.0), 1)
+
+                                # 更新导航数据并强制触发画面重绘
+                                self.nav_path = resp.get('path', [])
+                                self.cost_mask = resp.get('cost_mask', None)
+
+                                self.root.after(0, self.update_cmd_ui)
+                                self.root.after(0, self.render_map)
+                                self.send_command()
+
+                            time.sleep(0.1)
+
+                except ConnectionRefusedError:
+                    print("[!] 无法连接到导航服务端: 目标计算机拒绝连接 (服务端没开？)")
+                    time.sleep(1.0)
+                except Exception as e:
+                    print(f"[!] 导航网络通信异常: {e}")
+                    time.sleep(1.0)
+            else:
+                time.sleep(0.2)
+
+    def change_speed(self, v_delta=0.0, w_delta=0.0):
+        if self.auto_nav_enabled: return
+        self.target_linear_vel = max(-0.1, min(0.1, round(self.target_linear_vel + v_delta, 2)))
+        self.target_yaw_rate = max(-360.0, min(360.0, round(self.target_yaw_rate + w_delta, 1)))
+        self.update_cmd_ui()
+        self.send_command()
+
+    def stop_robot(self):
+        if self.auto_nav_enabled:
+            self.auto_nav_enabled = False
+            self.nav_path = []
+            self.cost_mask = None
+            self.btn_auto_nav.config(text="开启自动导航", bg="lightgray", fg="black")
+            self.write_log(">>> 紧急停止：自动导航模式已关闭", "red")
+            self.update_nav_ui()
+
+        self.target_linear_vel, self.target_yaw_rate = 0.0, 0.0
+        self.update_cmd_ui()
+        self.send_command()
+
+    def update_cmd_ui(self):
+        self.lbl_cmd_yaw.config(text=f"下发角速: {self.target_yaw_rate} °/s")
+        self.lbl_cmd_vel.config(text=f"下发线速: {self.target_linear_vel:.2f} m/s")
+
+    def send_command(self):
+        try:
+            p = struct.pack('<HBff', HEX_SEND_HEADER, TYPE_CMD, self.target_yaw_rate, self.target_linear_vel)
+            self.ser.write(p + struct.pack('<B', sum(p) & 0xFF))
+        except: pass
+
+    def write_log(self, msg, color="black"):
+        self.log_area.configure(state='normal')
+        self.log_area.insert(tk.END, f"[{time.strftime('%H:%M:%S')}] {msg}\n", color)
+        self.log_area.see(tk.END)
+        self.log_area.configure(state='disabled')
+
+    def bind_keys(self):
+        self.root.bind('<w>', lambda e: self.change_speed(v_delta=0.02))
+        self.root.bind('<s>', lambda e: self.change_speed(v_delta=-0.02))
+        self.root.bind('<a>', lambda e: self.change_speed(w_delta=10.0))
+        self.root.bind('<d>', lambda e: self.change_speed(w_delta=-10.0))
+        self.root.bind('<space>', lambda e: self.stop_robot())
 
 if __name__ == "__main__":
     root = tk.Tk()
