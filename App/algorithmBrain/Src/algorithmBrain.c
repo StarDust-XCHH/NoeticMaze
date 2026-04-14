@@ -40,10 +40,10 @@ static Pose last_ref_pose = {0.0f, 0.0f, 0.0f};
 // --- 【关键修复：将大数组放入全局 BSS 段，防止任务爆栈】 ---
 Point ref_scan[SCAN_SIZE];
 Point ref_normals[SCAN_SIZE];
-int ref_mask[SCAN_SIZE];
+uint8_t ref_mask[SCAN_SIZE];
 
 static Point curr_scan[SCAN_SIZE];
-static int   curr_mask[SCAN_SIZE];
+static uint8_t   curr_mask[SCAN_SIZE];
 // ------------------------------------------------------------
 
 void StartAlgorithmBrain(void *argument)

@@ -40,10 +40,10 @@ typedef struct { float x, y; } Point;
 typedef struct { float x, y, theta; } Pose;
 
 // 函数接口
-void get_surface_normals(Point* scan, Point* normals, int* valid_mask);
+void get_surface_normals(Point* scan, Point* normals, uint8_t* valid_mask);
 
-Pose point_to_line_icp(Point* curr_local, int* curr_mask, Point* ref_global, Point* ref_normals, int* ref_mask, Pose init_pose) ;
+Pose point_to_line_icp(Point* curr_local, uint8_t* curr_mask, Point* ref_global, Point* ref_normals, uint8_t* ref_mask, Pose init_pose) ;
 
 // 点云畸变修正
-void motion_deskew(Point* curr_local, int* curr_mask, float linear_v, float angular_w, float scan_time);
+void motion_deskew(Point* curr_local, uint8_t* curr_mask, float linear_v, float angular_w, float scan_time);
 #endif //NOETICMAZE_ICP_CORE_H

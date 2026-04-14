@@ -18,7 +18,7 @@
  * @param angular_w  小车当前角速度 (rad/s)，逆时针为正 (CCW+)
  * @param scan_time  本圈雷达扫描的真实物理耗时 (s)
  */
-void motion_deskew(Point* curr_local, int* curr_mask, float linear_v, float angular_w, float scan_time) {
+void motion_deskew(Point* curr_local, uint8_t* curr_mask, float linear_v, float angular_w, float scan_time) {
     // 【性能优化】：将循环内的除法提取到外部，计算出每个点之间的时间间隔比例
     // 用乘法代替除法，可为 360 次循环省下数百个时钟周期
     float time_step_ratio = scan_time / (float)SCAN_SIZE;
@@ -108,7 +108,7 @@ static int solve3x3_robust(double A[3][3], double B[3], float res[3]) {
     return 0;
 }
 
-void get_surface_normals(Point* scan, Point* normals, int* valid_mask) {
+void get_surface_normals(Point* scan, Point* normals, uint8_t* valid_mask) {
     for (int i = 0; i < SCAN_SIZE; i++) {
         // 【新增修改 1：检查当前点本身是否为无效点】
         // 假设你的无效点被赋值为 (0,0)，我们用极小值 1e-6f 来避免浮点误差导致的误判
@@ -152,7 +152,7 @@ void get_surface_normals(Point* scan, Point* normals, int* valid_mask) {
     }
 }
 
-Pose point_to_line_icp(Point* curr_local, int* curr_mask, Point* ref_global, Point* ref_normals, int* ref_mask, Pose init_pose) {    Pose est = init_pose;
+Pose point_to_line_icp(Point* curr_local, uint8_t* curr_mask, Point* ref_global, Point* ref_normals, uint8_t* ref_mask, Pose init_pose) {    Pose est = init_pose;
 
     for (int iter = 0; iter < MAX_ITER; iter++) {
         // 【第二阶段优化】内层循环使用 float 累加矩阵，牺牲微小精度换取 FPU 硬件加速

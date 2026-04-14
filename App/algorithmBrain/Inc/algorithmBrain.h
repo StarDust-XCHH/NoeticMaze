@@ -10,7 +10,7 @@
 // --- 修改为 extern 声明 ---
 extern Point ref_scan[SCAN_SIZE];
 extern Point ref_normals[SCAN_SIZE];
-extern int ref_mask[SCAN_SIZE];
+extern uint8_t ref_mask[SCAN_SIZE];
 
 // 1. 定义 ICP 帧数据传输结构体 (用于跨线程传递)
 typedef struct {
