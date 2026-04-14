@@ -17,6 +17,11 @@
 // 假设 IMU 校准标志位为全局变量（可以通过信号量或事件标志组优化，此处先保持简单）
 extern uint8_t g_imu_is_calibrated;
 
+// [TODO]: 需要静态数组维护路径点
+
+
+
+
 void StartMotionTask(void *argument)
 {
     // 1. 硬件外设与算法的初始化 (务必在死循环前完成)
@@ -40,13 +45,16 @@ void StartMotionTask(void *argument)
         // 更新编码器与里程计 (内部依赖 dt = 0.01s)
         Encoder_Update(NULL);
 
+        // [TODO] icp TF坐标变换：将高频里程计转为高频全局位姿
+
         // ==========================================
         // 2. 运动学与安全层 (Priority 4 的核心)
         // ==========================================
         // [TODO] 极速防撞逻辑：读取雷达/超声波标志位
         // if (Check_Collision_Danger()) { Motor_EmergencyStop(); }
 
-        // [TODO] TF 坐标变换与 Pure Pursuit 轨迹跟踪
+        // [TODO] TF 坐标变换与 Pure Pursuit 轨迹跟踪；在这里维护路径的TF变换
+
         // float desired_v, desired_w;
         // Run_Pure_Pursuit(&desired_v, &desired_w);
 

@@ -223,6 +223,16 @@ void StartAlgorithmBrain(void *argument)
                 }
 
 
+#if jumpOutIcp
+                // 1. 直接将当前预测里程计原始位姿给到 result
+                result = guess;
+#endif
+
+
+                // [TODO] : 在这里维护TF漂移补偿——>ICP 线程算出漂移补偿 @App/motor/Src/startMotion.c
+
+
+
                 // 3. 更新历史记录供下帧推算
                 last_icp_pose = result;
                 last_raw_odom = curr_raw_odom;
@@ -324,6 +334,13 @@ void StartAlgorithmBrain(void *argument)
                 g_MapIcp_Ready = 1;
                 osMutexRelease(MapDataMutexHandle);
             }
+
+
+
+            // [TODO] 在这里加入是否重新规划的判断
+
+
+            // [TODO] 根据上述判断，决定是否对栅格地图降采样并发送给AStar线程
 
 
             // ==========================================
