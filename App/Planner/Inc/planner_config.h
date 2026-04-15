@@ -11,7 +11,7 @@
 #define SERIAL_PORT "COM19"
 #define BAUD_RATE 1500000
 
-#define MAP_RES 0.1f
+#define PLANNER_MAP_RES 0.1f
 #define ASTAR_GOAL_TOL_GRIDS 1.5f
 #define PHYSICAL_RADIUS 0.10f
 #define INFLATE_L1_RAD 0.15f
@@ -27,15 +27,20 @@
 
 // 新增：历史路径亲和力配置
 #define PATH_AFFINITY_DISCOUNT 0.6f
-#define PATH_AFFINITY_RADIUS_GRIDS 3
-
+// 【修复】：直接改为物理单位米，解除与分辨率的强耦合
+#define PATH_AFFINITY_RADIUS_M 0.3f
 // ==========================================
 // 【嵌入式预备修改】：静态内存池宏定义与分配
 // ==========================================
 #define MAX_GRID_SIZE 50                           // 你的地图是5m/0.1=50
 #define MAX_CELLS (MAX_GRID_SIZE * MAX_GRID_SIZE)  // 2500
-#define MAX_MAP_BYTES ((MAX_CELLS + 1) / 2)        // 1250 字节
-#define MAX_PQ_SIZE 2048                           // 优先队列最大容量
+
+
+// 【修复】：把公式写成明确的 4bit 宽度逻辑 (2500 * 4 = 10000 bit -> 1250 Bytes)
+#define MAX_MAP_BYTES (((MAX_CELLS * 4) + 7) / 8)
+
+
+#define MAX_PQ_SIZE 2500                           // 优先队列最大容量
 #define MAX_PATH_LEN 400                           // 路径最大节点数
 
 // 【核心优化修改 1】：新增用于临时局部计算的短数组长度宏

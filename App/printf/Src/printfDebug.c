@@ -16,6 +16,7 @@
 #include "bt_protocol.h"
 #include "map_core.h"
 #include "motor_pid.h"
+#include "planner_core.h"
 #include "roboConifg.h"
 
 
@@ -49,7 +50,66 @@ volatile uint8_t bt_frame_ready = 0;    // 帧就绪标志位
 // DMA 必须使用这块稳定的内存，直到发送完成前不能被修改
 static MapIcp_Packet_t tx_map_pkg;
 
+// 静态分配 A* 路径 DMA 发送缓冲区
+static PathData_Packet_t tx_path_pkg;
+// 记录上位机已经发送过的最新路径序列号
+static uint32_t last_sent_path_seq = 0;
 
+
+/**
+ * @brief 检查全局公告板，如果有新路径则通过 DMA 发送
+ */
+void Send_Astar_Path_DMA(void) {
+    // 1. 非阻塞检查序列号，如果不等于记录值，说明 A* 算出了新路径！
+    if (g_current_safe_path.sequence != last_sent_path_seq) {
+
+        // 2. 检查串口 DMA 是否空闲 (容忍 10ms 延迟)
+        if (Wait_UART_Ready(&huart3, 10) == 0) {
+
+            // 【安全提取】：获取最新的点数和指针 (受乒乓缓冲保护，此指针指向的内存此时绝对安全)
+            uint16_t pts = g_current_safe_path.path_len;
+            Point2D* safe_path_ptr = g_current_safe_path.path_ptr;
+
+            // 安全截断，防止越界
+            if (pts > MAX_PATH_LEN) pts = MAX_PATH_LEN;
+
+            // 3. 填充固定字段
+            tx_path_pkg.header = 0x55AA;
+            tx_path_pkg.type   = 0x06;
+            tx_path_pkg.point_count = pts;
+
+            // 计算变长载荷长度：2字节的 point_count + N个点的坐标(每个点 float x,y 共8字节)
+            uint16_t points_bytes = pts * sizeof(Point2D);
+            uint16_t payload_len = 2 + points_bytes;
+            tx_path_pkg.data_len = payload_len;
+
+            // 4. 将实际路径数据拷贝到 DMA 发送缓冲区
+            if (pts > 0 && safe_path_ptr != NULL) {
+                memcpy(tx_path_pkg.path_points, safe_path_ptr, points_bytes);
+            }
+
+            // 5. 计算校验和 (范围：Type[1] + DataLen[2] + Payload[payload_len])
+            uint32_t check_range_len = 3 + payload_len;
+            uint8_t sum = Calc_Checksum(((uint8_t*)&tx_path_pkg) + 2, check_range_len);
+
+            // 6. 将校验和塞到数据的末尾
+            uint8_t* p_raw = (uint8_t*)&tx_path_pkg;
+            // 偏移量：Header(2) + Type(1) + DataLen(2) = 5，再加上载荷长度
+            p_raw[5 + payload_len] = sum;
+
+            // 7. 计算 DMA 实际要发送的总字节数
+            uint32_t total_tx_size = 5 + payload_len + 1;
+
+            // 8. 启动 DMA 发送
+            if (Wait_UART_Ready(&huart3, 10) == 0) {
+                HAL_UART_Transmit_DMA(&huart3, p_raw, total_tx_size);
+
+                // 9. 更新历史序列号，表示该帧已发送！
+                last_sent_path_seq = g_current_safe_path.sequence;
+            }
+        }
+    }
+}
 
 void Send_MapIcp_Data_DMA(void) {
     if (g_MapIcp_Ready == 1)
@@ -260,6 +320,9 @@ void StartTaskPrint(void *argument) {
         // 2. [新增] 检查是否有新的地图增量和ICP位姿准备就绪
 
         Send_MapIcp_Data_DMA();
+
+        // 3. 【全新接入】：检查并发送最新的 A* 规划路径
+        Send_Astar_Path_DMA();
 
 
 

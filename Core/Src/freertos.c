@@ -175,7 +175,7 @@ void MX_FREERTOS_Init(void) {
   LidarQueueHandle = osMessageQueueNew (3, 4, &LidarQueue_attributes);
 
   /* creation of ReqQueue */
-  ReqQueueHandle = osMessageQueueNew (3, 16, &ReqQueue_attributes);
+  ReqQueueHandle = osMessageQueueNew (3, 20, &ReqQueue_attributes);
 
   /* creation of RespQueue */
   RespQueueHandle = osMessageQueueNew (2, 12, &RespQueue_attributes);

@@ -1,5 +1,41 @@
 
-### 第四步：编写消费者线程的接收逻辑 (执行器 / 通信任务)
+### 唤醒者线程示例
+
+```c
+// SLAM / 导航监控线程 (如 10Hz 运行)
+void SLAM_Task(void *argument) {
+    for(;;) {
+        // 1. 获取最新激光雷达或深度相机数据，完成 SLAM 高精建图...
+        
+        // 2. 降采样：将高精数据转化为 50x50 的 0.1m 低精度导航图
+        // 直接改写 s_write_map_ptr 指向的 1250 Bytes 内存
+        Update_Costmap_To_PingPong_Buffer();
+        
+        // 3. 监控与调度逻辑
+        if (User_Set_New_Goal) {
+            // 情景 A：用户下发了新目标
+            PlannerReqMsg req = {1, false, goal_x, goal_y};
+            osMessageQueuePut(ReqQueueHandle, &req, 0, 0); // 唤醒 A*
+            
+        } else if (Is_Robot_Moving) {
+            // 情景 B：小车正在行驶，SLAM 需检查刚画的障碍物是否挡住了原有路径
+            bool path_blocked = Check_If_Current_Path_Blocked_By_New_Obstacle();
+            
+            if (path_blocked) {
+                // 致命情况：路被新障碍物挡死了！
+                g_abort_astar = true; // 1. 挥刀自宫，立刻打断 A* (如果它正在算旧路径)
+                
+                PlannerReqMsg req = {2, false, curr_goal_x, curr_goal_y}; 
+                osMessageQueuePut(ReqQueueHandle, &req, 0, 0); // 2. 下发紧急重算指令
+            }
+        }
+        
+        osDelay(100); // 10Hz 周期
+    }
+}
+```
+
+### 编写消费者线程的接收逻辑 (执行器 / 通信任务)
 
 现在，任何需要路径的线程都可以优雅地订阅这个事件。当事件发生时，它们会被**同时唤醒**，并且都能通过指针安全地读取同一个乒乓缓冲片里的数据。
 

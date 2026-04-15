@@ -106,8 +106,9 @@ int astar_plan(ServerMap* map, Point2D start, Point2D goal, Point2D* prev_path, 
     clear_all_affinity(map);
 
     if (prev_path && prev_path_len > 0) {
-        int r = PATH_AFFINITY_RADIUS_GRIDS;
-        int r_sq = r * r; // 预计算平方
+        // 【修复】：用实际配置的米换算成当下的动态网格数
+        int r = (int)(PATH_AFFINITY_RADIUS_M * inv_res);
+        int r_sq = r * r;
         for (int i = 0; i < prev_path_len; i++) {
             int px = (int)(prev_path[i].x * inv_res);
             int py = (int)(prev_path[i].y * inv_res);
@@ -175,6 +176,11 @@ int astar_plan(ServerMap* map, Point2D start, Point2D goal, Point2D* prev_path, 
 
         for (int i=0; i<8; i++) {
             int nx = curr_x + dx[i], ny = curr_y + dy[i];
+
+            // 【修复 1】：第一步先做严格的地图边界检查，防止生成非法的 n_idx 导致内存越界
+            if (nx < 0 || nx >= map->grid_size || ny < 0 || ny >= map->grid_size) {
+                continue;
+            }
 
             // 剔除邻居越界检查（已并入 evaluate_node_cost 处理）
             uint16_t penalty = evaluate_node_cost(map, nx, ny, is_return, r_phys2, r_l12, r_l22, r_l32, max_r);

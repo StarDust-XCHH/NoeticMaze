@@ -6,6 +6,8 @@
 #define NOETICMAZE_BT_PROTOCOL_H
 #include <stdint.h>
 
+#include "planner_config.h"
+
 // ✅ 将宏定义移动到这里：这是协议级的数据载荷限制
 #define MAX_MAP_DIFF 512
 
@@ -73,6 +75,20 @@ typedef struct {
     // 注意：checksum 将被动态放置在有效载荷的最后一个字节
     uint8_t  checksum;
 } MapIcp_Packet_t;
+
+
+typedef struct {
+    uint16_t header;       // 0x55AA
+    uint8_t  type;         // 0x06 (A* 规划路径包)
+    uint16_t data_len;     // 有效载荷长度 (PointCount(2) + PathPoints(N*8))
+
+    // 以下为有效载荷 (Payload)
+    uint16_t point_count;  // 路径点的个数
+    Point2D  path_points[MAX_PATH_LEN]; // 最多400个点，3200字节
+
+    // 注意：checksum 将被动态放置在有效载荷的最后一个字节
+    uint8_t  checksum;
+} PathData_Packet_t;
 
 #pragma pack(pop)
 #endif //NOETICMAZE_BT_PROTOCOL_H

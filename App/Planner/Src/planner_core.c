@@ -27,7 +27,10 @@
 // 引入 CubeMX 生成的队列句柄
 extern osMessageQueueId_t ReqQueueHandle;
 extern osMessageQueueId_t RespQueueHandle;
-
+// ==========================================
+// 【修复核心】：在这里真正实例化全局公告板，分配内存！
+// ==========================================
+GlobalPathState g_current_safe_path = {NULL, 0, 0.0f, 0};
 // ==========================================
 // 算法全局内存池 (BSS段)
 // ==========================================
@@ -58,7 +61,6 @@ volatile bool g_abort_astar = false;
 // ==========================================
 void StartPlannerTask(void *argument) {
     PlannerReqMsg req;
-    PlannerRespMsg resp;
 
     for(;;) {
         // 1. 阻塞等待规划请求 (正常规划 或 SLAM发起的紧急重算)
@@ -85,7 +87,12 @@ void StartPlannerTask(void *argument) {
         // 绑定最新地图给核心算法
         g_map.grid = s_read_map_ptr;
         g_map.grid_size = MAX_GRID_SIZE;
-        // g_map.res = MAP_RES; // 如果在初始化里已经赋过值了，这里可省
+        g_map.res = PLANNER_MAP_RES; // 【修复】：每次兜底赋值，彻底杜绝除零崩溃
+
+        // 增加早退保护，如果还是拿到了异常分辨率，直接拒绝规划
+        if (g_map.res <= 0.0f) {
+            continue;
+        }
 
         // 获取当前周期的输出缓冲区指针
         Point2D* current_out_buf = s_path_buffer_C[out_ping_pong_idx];
