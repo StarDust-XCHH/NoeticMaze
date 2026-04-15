@@ -133,7 +133,3 @@ void Encoder_ResetOdometry(void) {
     odom.linear_vel = 0.0f;
     taskEXIT_CRITICAL();
 }
-void Task_ReportRps(void *argument) {
-    printf("L_ms: %.2f, R_ms: %.2f, X: %.3f, Y: %.3f\n",
-            enc_left.speed_ms, enc_right.speed_ms, odom.x, odom.y);
-}

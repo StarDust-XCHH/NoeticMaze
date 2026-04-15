@@ -7,7 +7,7 @@
 #include <stdint.h>
 
 // ✅ 将宏定义移动到这里：这是协议级的数据载荷限制
-#define MAX_MAP_DIFF 1000
+#define MAX_MAP_DIFF 512
 
 
 // 强制 1 字节对齐，防止内存填充

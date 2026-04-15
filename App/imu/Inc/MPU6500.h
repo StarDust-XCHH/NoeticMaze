@@ -47,7 +47,6 @@ typedef struct {
 } IMU_Yaw_Handler_t;
 
 // 打印偏航角（Yaw）的任务
-void Task_ReportYaw(void *arg);
 float MapTo360(float angle);
 void IMU_Update(IMU_Yaw_Handler_t *handler);
 

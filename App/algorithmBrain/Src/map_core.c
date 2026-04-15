@@ -17,7 +17,7 @@
 
 uint32_t diff_cnt = 0;
 uint8_t diff_payload[MAX_MAP_DIFF * 3];
-uint8_t global_map[15625];
+uint8_t global_map[MAP_BYTES];
 
 
 // 物理坐标转地图格点坐标

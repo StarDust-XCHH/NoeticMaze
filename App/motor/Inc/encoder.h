@@ -70,8 +70,7 @@ Odometry_Data_t Encoder_GetOdometry(void);
  */
 void Encoder_ResetOdometry(void);
 
-// --- 打印与调试 ---
-void Task_ReportRps(void *argument);
+
 
 // --- 电机 PID 角度控制相关 ---
 

@@ -50,12 +50,6 @@ volatile uint8_t bt_frame_ready = 0;    // 帧就绪标志位
 static MapIcp_Packet_t tx_map_pkg;
 
 
-// GCC 编译器的 printf 底层输出函数重定向
-int _write(int file, char *ptr, int len) {
-    (void)file;
-    return 0 ;
-}
-
 
 void Send_MapIcp_Data_DMA(void) {
     if (g_MapIcp_Ready == 1)

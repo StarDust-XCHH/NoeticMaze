@@ -39,8 +39,8 @@ static inline void SetMapState(int x, int y, uint8_t state) {
  * @brief 尝试更新地图并记录增量 - 仅限 SLAM 线程
  */
 static inline int UpdateAndRecordMap(int x, int y, uint8_t new_state) {
-    // 同样继承 SetMapState 的断言保护
-    if (x >= MAP_SIZE || y >= MAP_SIZE) return 0;
+    // 安全检查，防止越界
+    if (x < 0 || x >= MAP_SIZE || y < 0 || y >= MAP_SIZE) return 0;
 
     uint8_t old_state = GetMapState(x, y);
 
@@ -50,17 +50,27 @@ static inline int UpdateAndRecordMap(int x, int y, uint8_t new_state) {
     }
 #endif
 
+    // 如果状态没有改变，直接返回
     if (old_state == new_state) return 0;
 
-    if (diff_cnt < MAX_MAP_DIFF) {
-        SetMapState(x, y, new_state); // 这里面有线程断言
+    // ==========================================================
+    // 1. 无条件更新本地物理地图（解耦核心）
+    // ==========================================================
+    // 无论串口/蓝牙发送缓冲区是否已满，SLAM 核心地图必须保持最新！
+    SetMapState(x, y, new_state);
 
+    // ==========================================================
+    // 2. 有条件地记录增量用于通信发送
+    // ==========================================================
+    if (diff_cnt < MAX_MAP_DIFF) {
         diff_payload[diff_cnt * 3 + 0] = x;
         diff_payload[diff_cnt * 3 + 1] = y;
         diff_payload[diff_cnt * 3 + 2] = new_state;
         diff_cnt++;
-        return 1;
+        return 1; // 成功记录到增量包中
     }
+
+    // 返回 0 表示地图已更新，但增量缓冲区已满被丢弃，未能记录用于发送
     return 0;
 }
 

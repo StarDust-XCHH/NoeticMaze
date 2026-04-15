@@ -63,18 +63,6 @@ void Task_IMU_Update(void *arg) {
 }
 
 
-// 打印偏航角（Yaw）的任务
-void Task_ReportYaw(void *arg) {
-	// 1. 将 void 指针强转回 float 指针
-	float *yaw_ptr = (float *)arg;
-
-	// 2. 检查指针是否为空（防御性编程）
-	if (yaw_ptr != NULL) {
-		// 3. 解引用获取最新的值并打印
-		printf("Yaw: %.2f°\n", *yaw_ptr);
-	}
-}
-
 /**
  * @brief 将角度映射到 [0, 360) 空间
  */

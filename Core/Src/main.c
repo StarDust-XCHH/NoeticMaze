@@ -122,12 +122,12 @@ int main(void)
   while(MPU6500Init() != HAL_OK){}; //——>初始化MPU6500
   start_time = HAL_GetTick();       //——>初始化imu零漂速率
   setvbuf(stdout, NULL, _IONBF, 0); // 建议把这句也提前
-  printf("\r\nimu init finish\r\n");
+  // printf("\r\nimu init finish\r\n");
 
   // 2. IMU 搞定后，再放开雷达的“洪荒之力”
   Lidar_Init(&hlidar1, &huart1);
   Lidar_Start(&hlidar1);
-  printf("\r\nlidar init finish\r\n");
+  // printf("\r\nlidar init finish\r\n");
 
 
   // === 新增：启动蓝牙串口接收 ===
@@ -136,7 +136,7 @@ int main(void)
   HAL_UARTEx_ReceiveToIdle_DMA(&huart3, bt_rx_raw_buf, BT_RX_BUF_SIZE);
   // 禁用 DMA 半传输中断（防止大包时触发两次，影响逻辑）
   __HAL_DMA_DISABLE_IT(huart3.hdmarx, DMA_IT_HT);
-  printf("Bluetooth Rx Started\r\n");
+  // printf("Bluetooth Rx Started\r\n");
 
 
   /* USER CODE END 2 */

@@ -15,13 +15,14 @@
 #define MAP_OCCUPIED 0x02
 #define MAP_OFFSET   0.0f
 #define MAP_RES      0.02f
-#define MAP_SIZE     250
-
+#define MAP_SIZE     200
+#define MAP_CELLS  MAP_SIZE * MAP_SIZE
+#define MAP_BYTES  (MAP_CELLS + 3) / 4
 int world_to_grid(float world_val, int *grid_idx);
 
 // ⚠️ 注意：暴露 global_map 是为了让内联的 GetMapState 能够高速运行。
 // 我们依靠架构纪律和 write.h 封装来防止其他线程恶意写入。
-extern uint8_t global_map[15625];
+extern uint8_t global_map[MAP_BYTES];
 
 // 栅格地图蓝牙发送相关
 extern osMutexId_t MapDataMutexHandle;
