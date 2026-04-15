@@ -125,12 +125,17 @@ void StartPlannerTask(void *argument) {
 
         // 如果中途没有被 SLAM 打断，且生成了有效路径，则发送结果
         if (!g_abort_astar && final_path_len > 0) {
-            resp.path_ptr = (void*)current_out_buf;
-            resp.path_len = final_path_len;
-            resp.exec_time_ms = elapsed_ms;
+            // 【修改点 1】：不再塞入队列，而是更新全局公告板
+            // 使用临界区保护全局变量的批量更新，防止读取线程读到一半发生上下文切换
+            taskENTER_CRITICAL();
+            g_current_safe_path.path_ptr = current_out_buf;
+            g_current_safe_path.path_len = final_path_len;
+            g_current_safe_path.exec_time_ms = elapsed_ms;
+            g_current_safe_path.sequence++; // 序列号递增，证明这是新数据
+            taskEXIT_CRITICAL();
 
-            // 将结果发送给运动控制任务或通信任务
-            osMessageQueuePut(RespQueueHandle, &resp, 0, 0);
+            // 【修改点 2】：广播事件，唤醒所有正在等待该事件的线程
+            osEventFlagsSet(PathEventHandle, EVENT_PATH_UPDATED);
 
             // 翻转输出缓冲片，下次循环使用另一片，保护正被其他线程读取的数据
             out_ping_pong_idx ^= 1;

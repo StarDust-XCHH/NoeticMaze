@@ -121,6 +121,11 @@ osMutexId_t MapDataMutexHandle;
 const osMutexAttr_t MapDataMutex_attributes = {
   .name = "MapDataMutex"
 };
+/* Definitions for PathEvent */
+osEventFlagsId_t PathEventHandle;
+const osEventFlagsAttr_t PathEvent_attributes = {
+  .name = "PathEvent"
+};
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
@@ -204,6 +209,9 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
+
+  /* creation of PathEvent */
+  PathEventHandle = osEventFlagsNew(&PathEvent_attributes);
 
   /* USER CODE BEGIN RTOS_EVENTS */
   /* add events, ... */

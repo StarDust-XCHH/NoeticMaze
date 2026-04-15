@@ -34,6 +34,24 @@ typedef struct {
     float exec_time_ms; // 算法执行耗时
 } PlannerRespMsg;
 
+// ==========================================
+// 线程间通信：广播流全局状态 (多消费者安全读取)
+// ==========================================
+typedef struct {
+    Point2D* path_ptr;      // 指向最新有效乒乓缓冲片的指针
+    int path_len;           // 最新路径的长度
+    float exec_time_ms;     // 算法耗时
+    uint32_t sequence;      // 更新序列号 (每次更新 +1)
+} GlobalPathState;
+
+// 暴露全局公告板
+extern GlobalPathState g_current_safe_path;
+
+// 暴露事件标志组句柄 (用于唤醒所有沉睡的读取线程)
+extern osEventFlagsId_t PathEventHandle;
+
+// 定义路径更新事件的 Bit 掩码 (第0位)
+#define EVENT_PATH_UPDATED  0x00000001U
 
 // ==========================================
 // 暴露给 SLAM 线程的数据流与异常流接口
