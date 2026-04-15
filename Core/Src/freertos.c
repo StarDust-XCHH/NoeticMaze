@@ -89,10 +89,27 @@ const osThreadAttr_t TaskPrint_attributes = {
   .stack_size = 1024 * 4,
   .priority = (osPriority_t) osPriorityLow,
 };
+/* Definitions for PlannerTask */
+osThreadId_t PlannerTaskHandle;
+const osThreadAttr_t PlannerTask_attributes = {
+  .name = "PlannerTask",
+  .stack_size = 1024 * 4,
+  .priority = (osPriority_t) osPriorityBelowNormal,
+};
 /* Definitions for LidarQueue */
 osMessageQueueId_t LidarQueueHandle;
 const osMessageQueueAttr_t LidarQueue_attributes = {
   .name = "LidarQueue"
+};
+/* Definitions for ReqQueue */
+osMessageQueueId_t ReqQueueHandle;
+const osMessageQueueAttr_t ReqQueue_attributes = {
+  .name = "ReqQueue"
+};
+/* Definitions for RespQueue */
+osMessageQueueId_t RespQueueHandle;
+const osMessageQueueAttr_t RespQueue_attributes = {
+  .name = "RespQueue"
 };
 /* Definitions for PrintfMutex */
 osMutexId_t PrintfMutexHandle;
@@ -116,6 +133,7 @@ extern void StartImuTask(void *argument);
 extern void StartLidarRouteTask(void *argument);
 extern void StartAlgorithmBrain(void *argument);
 extern void StartTaskPrint(void *argument);
+extern void StartPlannerTask(void *argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -151,6 +169,12 @@ void MX_FREERTOS_Init(void) {
   /* creation of LidarQueue */
   LidarQueueHandle = osMessageQueueNew (3, 4, &LidarQueue_attributes);
 
+  /* creation of ReqQueue */
+  ReqQueueHandle = osMessageQueueNew (3, 16, &ReqQueue_attributes);
+
+  /* creation of RespQueue */
+  RespQueueHandle = osMessageQueueNew (2, 12, &RespQueue_attributes);
+
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
@@ -174,6 +198,9 @@ void MX_FREERTOS_Init(void) {
   /* creation of TaskPrint */
   TaskPrintHandle = osThreadNew(StartTaskPrint, NULL, &TaskPrint_attributes);
 
+  /* creation of PlannerTask */
+  PlannerTaskHandle = osThreadNew(StartPlannerTask, NULL, &PlannerTask_attributes);
+
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
@@ -193,8 +220,6 @@ void MX_FREERTOS_Init(void) {
 /* USER CODE END Header_StartDefaultTask */
 void StartDefaultTask(void *argument)
 {
-
-  (void) argument;
   /* USER CODE BEGIN StartDefaultTask */
   /* Infinite loop */
   for(;;)
