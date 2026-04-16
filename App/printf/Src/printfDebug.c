@@ -287,11 +287,11 @@ void StartTaskPrint(void *argument) {
 
             // 打包并发送状态
             state_pkg.sweep_count = current_sweep;
-            state_pkg.x           = current_robot_state.x_encoder;
-            state_pkg.y           = current_robot_state.y_encoder;
-            state_pkg.linear_vel  = current_robot_state.linear_vel_encoder;
-            state_pkg.yaw         = current_robot_state.yaw;
-            state_pkg.yaw_rate    = current_robot_state.yaw_rate;
+            state_pkg.x           = current_robot_state.global_fast_x_m;
+            state_pkg.y           = current_robot_state.global_fast_y_m;
+            state_pkg.linear_vel  = current_robot_state.linear_vel_encoder_m_s;
+            state_pkg.yaw         = Robot_RadToDeg(current_robot_state.global_fast_theta_rad);
+            state_pkg.yaw_rate    = current_robot_state.yaw_rate_deg_s;
             state_pkg.target_yaw_rate = Motor_GetTargetYawRate();
 
             state_pkg.checksum = Calc_Checksum((uint8_t*)&state_pkg + 3, 28);
@@ -332,11 +332,11 @@ void StartTaskPrint(void *argument) {
         Get_Robot_State_Snapshot(&current_robot_state);
 
         state_pkg.sweep_count = osKernelGetTickCount(); // 替用系统 Tick 时间戳
-        state_pkg.x           = current_robot_state.x_encoder;
-        state_pkg.y           = current_robot_state.y_encoder;
-        state_pkg.linear_vel  = current_robot_state.linear_vel_encoder;
-        state_pkg.yaw         = current_robot_state.yaw;
-        state_pkg.yaw_rate    = current_robot_state.yaw_rate;
+            state_pkg.x           = current_robot_state.global_fast_x_m;
+            state_pkg.y           = current_robot_state.global_fast_y_m;
+            state_pkg.linear_vel  = current_robot_state.linear_vel_encoder_m_s;
+            state_pkg.yaw         = Robot_RadToDeg(current_robot_state.global_fast_theta_rad);
+            state_pkg.yaw_rate    = current_robot_state.yaw_rate_deg_s;
         state_pkg.target_yaw_rate = Motor_GetTargetYawRate();
 
         state_pkg.checksum = Calc_Checksum((uint8_t*)&state_pkg + 3, 28);

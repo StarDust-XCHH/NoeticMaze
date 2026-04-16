@@ -174,7 +174,7 @@ void Task_MotorPID_Update(void) { // 改为 void，不再依赖外部传参
     // 3. 角速度环修正 (仅在角速度模式下)
     if (is_yaw_rate_mode) {
         // A. 反馈：计算角速度误差带来的 PID 补偿
-        float angular_pid_offset = _Calculate_YawRate_Error_Correction(state.yaw_rate);
+        float angular_pid_offset = _Calculate_YawRate_Error_Correction(state.yaw_rate_deg_s);
 
         // B. 前馈：基于运动学的理论差速计算
         // 先将目标角速度 (deg/s) 转化为 (rad/s)

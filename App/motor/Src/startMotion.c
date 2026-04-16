@@ -13,6 +13,7 @@
 #include "encoder.h"
 #include "motor_pid.h"
 #include "robot_state.h"
+#include "arm_math.h"
 
 // 假设 IMU 校准标志位为全局变量（可以通过信号量或事件标志组优化，此处先保持简单）
 extern uint8_t g_imu_is_calibrated;
@@ -45,7 +46,24 @@ void StartMotionTask(void *argument)
         // 更新编码器与里程计 (内部依赖 dt = 0.01s)
         Encoder_Update(NULL);
 
-        // [TODO] icp TF坐标变换：将高频里程计转为高频全局位姿
+        // icp TF坐标变换：将高频里程计转为高频全局位姿
+        {
+            RobotState_t current_robot_state;
+            Get_Robot_State_Snapshot(&current_robot_state);
+
+            float theta_odom_rad = Normalize_Angle_Rad(Robot_DegToRad(current_robot_state.yaw_deg));
+            float tf_theta_rad = current_robot_state.tf_map_odom_theta_rad;
+            float cos_tf = arm_cos_f32(tf_theta_rad);
+            float sin_tf = arm_sin_f32(tf_theta_rad);
+
+            float global_fast_x_m = current_robot_state.tf_map_odom_x_m +
+                                    (cos_tf * current_robot_state.x_encoder_m - sin_tf * current_robot_state.y_encoder_m);
+            float global_fast_y_m = current_robot_state.tf_map_odom_y_m +
+                                    (sin_tf * current_robot_state.x_encoder_m + cos_tf * current_robot_state.y_encoder_m);
+            float global_fast_theta_rad = Normalize_Angle_Rad(tf_theta_rad + theta_odom_rad);
+
+            Update_Robot_Global_Fast_Pose(global_fast_x_m, global_fast_y_m, global_fast_theta_rad);
+        }
 
         // ==========================================
         // 2. 运动学与安全层 (Priority 4 的核心)

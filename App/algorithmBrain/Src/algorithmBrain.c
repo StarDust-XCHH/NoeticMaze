@@ -163,16 +163,15 @@ void StartAlgorithmBrain(void *argument)
 
             // 【修正 1】：IMU 读出的是角度制，ICP 内部需要严格的标准弧度制
             Pose curr_raw_odom;
-            curr_raw_odom.x = current_robot_state.x_encoder;
-            curr_raw_odom.y = current_robot_state.y_encoder;
-            curr_raw_odom.theta = current_robot_state.yaw * (PI / 180.0f); // Deg to Rad
+            curr_raw_odom.x = current_robot_state.x_encoder_m;
+            curr_raw_odom.y = current_robot_state.y_encoder_m;
+            curr_raw_odom.theta = Robot_DegToRad(current_robot_state.yaw_deg); // Deg to Rad
 
             // 你的 yaw 是 0~360 逆时针，直接转弧度
-            float yaw_rad = current_robot_state.yaw * (PI / 180.0f);
+            float yaw_rad = Robot_DegToRad(current_robot_state.yaw_deg);
 
             // 强制规范化到 [-PI, PI] 区间，防止 359度 和 0度 之间发生数值跳变崩盘！
-            while (yaw_rad >  PI) yaw_rad -= 2.0f * PI;
-            while (yaw_rad < -PI) yaw_rad += 2.0f * PI;
+            yaw_rad = Normalize_Angle_Rad(yaw_rad);
             curr_raw_odom.theta = yaw_rad;
 
             // 2. 将极坐标 Lidar 数据转为 Cartesian (XY) 点云，并生成 Mask
@@ -194,7 +193,7 @@ void StartAlgorithmBrain(void *argument)
                     while (angle_deg < 0.0f) angle_deg += 360.0f;
 
                     // 4. 转为弧度
-                    float angle_rad = angle_deg * (PI / 180.0f);
+                    float angle_rad = Robot_DegToRad(angle_deg);
 
                     float cos_val = arm_cos_f32(angle_rad);
                     float sin_val = arm_sin_f32(angle_rad);
@@ -217,11 +216,11 @@ void StartAlgorithmBrain(void *argument)
             // 而 motion_deskew 函数里要求的是 弧度/秒 (rad/s)！
             // 这里必须进行严格的单位转换，否则点云会瞬间炸毁！
 
-            float current_linear_v = current_robot_state.linear_vel_encoder; // 确保是 m/s
+            float current_linear_v = current_robot_state.linear_vel_encoder_m_s; // 确保是 m/s
 
             // 假设你的状态机里角速度是度/秒，转成弧度/秒。
             // ⚠️ 同样要注意正负号：必须符合逆时针为正 (CCW+)！如果原数据是顺时针为正，这里要加负号！
-            float current_angular_w = current_robot_state.yaw_rate * (PI / 180.0f);
+            float current_angular_w = Robot_DegToRad(current_robot_state.yaw_rate_deg_s);
 
             // 取出由 5KHz 硬件时钟积分得来的完美无抖动时间
             float real_scan_time = received_map->scan_time;
@@ -237,7 +236,7 @@ void StartAlgorithmBrain(void *argument)
             if (!icp_internal_init)
             {
                 // --- 初始化流程：建立参考帧 ---
-                float ct = cosf(curr_raw_odom.theta), st = sinf(curr_raw_odom.theta);
+                float ct = arm_cos_f32(curr_raw_odom.theta), st = arm_sin_f32(curr_raw_odom.theta);
                 for(int k=0; k<SCAN_SIZE; k++) {
                     if (curr_mask[k]) {
                         ref_scan[k].x = ct * curr_scan[k].x - st * curr_scan[k].y + curr_raw_odom.x;
@@ -253,6 +252,8 @@ void StartAlgorithmBrain(void *argument)
                 result = curr_raw_odom;
                 last_icp_pose = result;
                 last_raw_odom = curr_raw_odom;
+                // last_ref_pose = result; // 暂时注释，可以观察是否会影响
+                Update_Robot_TF_MapOdom(0.0f, 0.0f, 0.0f);
 
                 icp_internal_init = 1;
             }
@@ -265,23 +266,19 @@ void StartAlgorithmBrain(void *argument)
                 float dtheta = curr_raw_odom.theta - last_raw_odom.theta;
 
                 // 角度规范化
-                while (dtheta >  M_PI) dtheta -= 2.0f * M_PI;
-                while (dtheta < -M_PI) dtheta += 2.0f * M_PI;
+                dtheta = Normalize_Angle_Rad(dtheta);
 
-                float cos_odom_prev = cosf(last_raw_odom.theta);
-                float sin_odom_prev = sinf(last_raw_odom.theta);
+                float cos_odom_prev = arm_cos_f32(last_raw_odom.theta);
+                float sin_odom_prev = arm_sin_f32(last_raw_odom.theta);
                 float dx_local = dx_odom_global * cos_odom_prev + dy_odom_global * sin_odom_prev;
                 float dy_local = -dx_odom_global * sin_odom_prev + dy_odom_global * cos_odom_prev;
 
                 Pose guess;
-                float cos_icp_prev = cosf(last_icp_pose.theta);
-                float sin_icp_prev = sinf(last_icp_pose.theta);
+                float cos_icp_prev = arm_cos_f32(last_icp_pose.theta);
+                float sin_icp_prev = arm_sin_f32(last_icp_pose.theta);
                 guess.x = last_icp_pose.x + (dx_local * cos_icp_prev - dy_local * sin_icp_prev);
                 guess.y = last_icp_pose.y + (dx_local * sin_icp_prev + dy_local * cos_icp_prev);
-                guess.theta = last_icp_pose.theta + dtheta;
-
-                while (guess.theta >  M_PI) guess.theta -= 2.0f * M_PI;
-                while (guess.theta < -M_PI) guess.theta += 2.0f * M_PI;
+                guess.theta = Normalize_Angle_Rad(last_icp_pose.theta + dtheta);
 
                 // 2. 调用点到线 ICP 算法
                 // 【进阶机制：里程计信任死区】
@@ -301,9 +298,15 @@ void StartAlgorithmBrain(void *argument)
 #endif
 
 
-                // [TODO] : 在这里维护TF漂移补偿——>ICP 线程算出漂移补偿 @App/motor/Src/startMotion.c
-
-
+                // 维护 map<-odom TF 漂移补偿，供 100Hz 运动线程实时合成高频全局位姿
+                {
+                    float tf_theta = Normalize_Angle_Rad(result.theta - curr_raw_odom.theta);
+                    float cos_tf = arm_cos_f32(tf_theta);
+                    float sin_tf = arm_sin_f32(tf_theta);
+                    float tf_x = result.x - (cos_tf * curr_raw_odom.x - sin_tf * curr_raw_odom.y);
+                    float tf_y = result.y - (sin_tf * curr_raw_odom.x + cos_tf * curr_raw_odom.y);
+                    Update_Robot_TF_MapOdom(tf_x, tf_y, tf_theta);
+                }
 
                 // 3. 更新历史记录供下帧推算
                 last_icp_pose = result;
@@ -316,8 +319,7 @@ void StartAlgorithmBrain(void *argument)
                 float dtheta_ref = result.theta - last_ref_pose.theta;
 
                 // 角度规范化
-                while (dtheta_ref >  M_PI) dtheta_ref -= 2.0f * M_PI;
-                while (dtheta_ref < -M_PI) dtheta_ref += 2.0f * M_PI;
+                dtheta_ref = Normalize_Angle_Rad(dtheta_ref);
 
                 float dist_sq = dx_ref * dx_ref + dy_ref * dy_ref;
 
@@ -326,7 +328,7 @@ void StartAlgorithmBrain(void *argument)
 
                     last_ref_pose = result; // 记录本次参考帧的位姿
 
-                    float ct = cosf(result.theta), st = sinf(result.theta);
+                    float ct = arm_cos_f32(result.theta), st = arm_sin_f32(result.theta);
                     for(int k=0; k<SCAN_SIZE; k++) {
                         if (curr_mask[k]) {
                             ref_scan[k].x = ct * curr_scan[k].x - st * curr_scan[k].y + result.x;
