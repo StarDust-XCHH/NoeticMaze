@@ -406,6 +406,9 @@ void StartAlgorithmBrain(void *argument)
                 osMutexRelease(MapDataMutexHandle);
             }
 
+
+#if IS_ICP2ASTAR
+
             // ==========================================
             // 步骤 D: 维护 planner 图并判定是否触发重规划
             // ==========================================
@@ -483,6 +486,7 @@ void StartAlgorithmBrain(void *argument)
                     s_blocked_streak = 0;
                 }
             }
+#endif
 
             // 步骤 E: 归还内存块给 Lidar 空闲队列
             osMessageQueuePut(LidarFreeQueueHandle, &received_map, 0, 0);

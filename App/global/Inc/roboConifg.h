@@ -18,6 +18,11 @@
 
 
 // icp相关
+
+// 是否发布流到Astar线程进行规划
+
+#define IS_ICP2ASTAR 1
+
 #define jumpOutIcp 0 // 是否跳过icp算法
 #define MIN_VALID_POINTS_FOR_INIT 280 // 需至少有 280 个有效点才认为icp初始化完成
 // --- 空间关键帧更新阈值 (KeyFrame Update) ---
