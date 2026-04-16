@@ -37,6 +37,17 @@
 #define ZUPT_DEADZONE_DIST_SQ    0.000004f  // 死区距离平方：0.000004f 代表 0.002m (2mm) 的平方
 #define ZUPT_DEADZONE_ANGLE_RAD  0.0025f     // 死区角度：0.005f rad 约等于 0.14度
 
+// --- 路径裁切保护参数 ---
+// 说明：裁切基于路径弧长推进，而不是基于车前/车后；这样才能兼容倒车等效场景
+
+
+#define PATH_PROJECTION_MAX_DIST_M     0.22f   // 最近投影距离过大时视为不可信，不更新裁切进度
+#define PATH_PROGRESS_MAX_STEP_M       0.06f   // 单个 10ms 周期允许的最大弧长推进，防止 U 型弯跳段
+#define PATH_TRIM_BACK_MARGIN_M        0.10f   // 裁切时保留少量历史余量，避免首点/显示突变
+#define PATH_SEARCH_BACK_WINDOW        12      // 最近投影索引局部回看窗口
+#define PATH_SEARCH_FORWARD_WINDOW     20      // 最近投影索引局部前看窗口
+#define PATH_MIN_SEG_LEN_M             0.002f  // 路径线段最小有效长度，避免除零与数值放大
+
 
 // imu相关
 #define YAW_DRIFT_RATE  0.00391974f

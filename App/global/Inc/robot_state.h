@@ -6,6 +6,8 @@
 #define NOETICMAZE_ROBOT_STATE_H
 
 #include <stdint.h>
+#include <stdbool.h>
+#include "planner_config.h"
 
 #ifndef PI
 #define PI 3.14159265358979f
@@ -38,6 +40,26 @@ typedef struct {
     float global_fast_theta_rad;  // map 系高频朝向 (rad)
 } RobotState_t;
 
+typedef struct {
+    Point2D path_points[MAX_PATH_LEN];
+    uint16_t path_len;
+    float progress_s_m;
+    uint32_t source_path_sequence;
+    uint32_t tf_version;
+    uint32_t trimmed_sequence;
+    uint8_t valid;
+} TrimmedPathState;
+
+typedef struct {
+    Point2D* path_ptr;
+    uint16_t path_len;
+    float progress_s_m;
+    uint32_t source_path_sequence;
+    uint32_t tf_version;
+    uint32_t trimmed_sequence;
+    bool valid;
+} TrimmedPathSnapshot;
+
 // ==========================================
 // 角度/姿态辅助接口
 // ==========================================
@@ -53,6 +75,7 @@ float Robot_RadToDeg(float angle_rad);
  * @param out_state 指向接收数据的结构体指针
  */
 void Get_Robot_State_Snapshot(RobotState_t *out_state);
+bool Get_Trimmed_Path_Snapshot(TrimmedPathSnapshot *out_snapshot);
 
 // ==========================================
 // 全局状态更新接口 (解耦更新)
@@ -88,6 +111,13 @@ void Update_Robot_TF_MapOdom(float tf_x_m, float tf_y_m, float tf_theta_rad);
  * @param theta_rad map 系朝向，单位 rad
  */
 void Update_Robot_Global_Fast_Pose(float x_m, float y_m, float theta_rad);
+void Update_Trimmed_Path_State(const Point2D* path_points,
+                               uint16_t path_len,
+                               float progress_s_m,
+                               uint32_t source_path_sequence,
+                               uint32_t tf_version,
+                               uint8_t valid);
+void Reset_Trimmed_Path_State(void);
 
 // 保留兼容接口（单位保持原语义）
 float Get_Global_Yaw(void);          // 返回 yaw_deg

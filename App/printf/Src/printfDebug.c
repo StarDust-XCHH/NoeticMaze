@@ -60,14 +60,14 @@ static uint32_t last_sent_path_seq = 0;
  * @brief 检查全局公告板，如果有新路径则通过 DMA 发送
  */
 void Send_Astar_Path_DMA(void) {
-    GlobalPathSnapshot path_snapshot;
+    TrimmedPathSnapshot path_snapshot;
 
-    // 1. 非阻塞检查序列号，如果不等于记录值，说明 A* 算出了新路径！
-    if (Get_Global_Path_Snapshot(&path_snapshot) && path_snapshot.sequence != last_sent_path_seq) {
+    // 发送执行层已经安全裁切后的路径视图，而不是原始全路径
+    if (Get_Trimmed_Path_Snapshot(&path_snapshot) && path_snapshot.trimmed_sequence != last_sent_path_seq) {
 
         // 2. 检查串口 DMA 是否空闲 (容忍 10ms 延迟)
         if (Wait_UART_Ready(&huart3, 10) == 0) {
-            uint16_t pts = (uint16_t)path_snapshot.path_len;
+            uint16_t pts = path_snapshot.path_len;
             Point2D* safe_path_ptr = path_snapshot.path_ptr;
 
             // 安全截断，防止越界
@@ -105,7 +105,7 @@ void Send_Astar_Path_DMA(void) {
                 HAL_UART_Transmit_DMA(&huart3, p_raw, total_tx_size);
 
                 // 9. 更新历史序列号，表示该帧已发送！
-                last_sent_path_seq = path_snapshot.sequence;
+                last_sent_path_seq = path_snapshot.trimmed_sequence;
             }
         }
     }
