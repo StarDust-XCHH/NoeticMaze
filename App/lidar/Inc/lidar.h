@@ -44,6 +44,16 @@ typedef struct {
 
 } LidarMap_t;
 
+
+// ==========================================
+// 【新增】帧缓存结构体 (用于两帧插值)
+// ==========================================
+typedef struct {
+    uint8_t  is_valid;           // 缓存有效标志位
+    float    start_angle;        // 上一帧的起始角度
+    uint16_t distances[LIDAR_POINTS_PER_FRAME]; // 上一帧的40个原始距离
+} Lidar_Cache_t;
+
 // 雷达控制句柄
 typedef struct {
     UART_HandleTypeDef *huart;
@@ -58,7 +68,10 @@ typedef struct {
     uint16_t last_dma_pos;
 
     // 解析状态
-    float32_t last_start_angle;
+
+    // --- 删除原来的 last_start_angle，替换为缓存结构 ---
+    Lidar_Cache_t cache;
+    // ------------------------------------------------
     uint32_t  sweep_count;
 
 

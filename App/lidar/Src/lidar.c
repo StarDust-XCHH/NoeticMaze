@@ -33,7 +33,8 @@ static const float32_t Lidar_Angle_Offsets[40] = {
 void Lidar_Init(Lidar_HandleTypeDef *hlidar, UART_HandleTypeDef *huart) {
     memset(hlidar, 0, sizeof(Lidar_HandleTypeDef));
     hlidar->huart = huart;
-    hlidar->last_start_angle = 0.0f;
+    // 【新增】初始化时缓存无效
+    hlidar->cache.is_valid = 0;
     hlidar->last_dma_pos = 0; // [新增：初始化 DMA 位置]
 
     osMessageQueueAttr_t free_q_attr = { .name = "LidarFreeQ" };
@@ -117,97 +118,111 @@ void Lidar_ParseDMA_ISR(Lidar_HandleTypeDef *hlidar, uint16_t Size) {
  * 解析核心函数 (Task 内联调用)
  * ========================================== */
 
-// 解析一帧数据，如果检测到新的一圈完成，返回 1，否则返回 0
-// 解析一帧数据，如果检测到新的一圈完成，返回 1，否则返回 0
-static uint8_t Lidar_DecodeFrame_DSP(Lidar_HandleTypeDef *hlidar, const uint8_t *payload) {
-    // --- 1. 将所有变量声明统一放在作用域的最顶部 (兼容所有编译器) ---
+/**
+ * @brief  工业级两帧插值解算器 (动态补偿电机波动)
+ * @return 1:触发了跨圈(360°) 0:正常解析
+ */
+static uint8_t Lidar_DecodeFrame_Dynamic(Lidar_HandleTypeDef *hlidar, const uint8_t *payload) {
     uint8_t sweep_completed = 0;
     uint16_t angle_raw;
-    float32_t start_angle;
-    float32_t abs_angles[40];
-    uint16_t i;
-    uint16_t base;
-    uint16_t dis;
-    float32_t final_angle;
-    int angle_idx;
+    float current_start_angle;
 
-    // --- 2. 开始执行逻辑 ---
+    // 1. 提取当前包(Frame i+1)的起始角度
     angle_raw = (uint16_t)(((uint16_t)(payload[3] & 0x7FU) << 8) | payload[2]);
-    start_angle = (float32_t)angle_raw * 0.015625f;
+    current_start_angle = (float)angle_raw * 0.015625f;
 
-    // 批量计算 40 个点的绝对角度
-    arm_offset_f32((float32_t*)Lidar_Angle_Offsets, start_angle, abs_angles, 40);
+    // 2. 核心逻辑：如果手里有缓存的“上一帧(Frame i)”，才进行解算
+    if (hlidar->cache.is_valid) {
+        float cached_angle = hlidar->cache.start_angle;
 
-    // 检测一圈是否结束 (角度发生突变)
-    if (start_angle < hlidar->last_start_angle && (hlidar->last_start_angle - start_angle) > 100.0f) {
-        hlidar->sweep_count++;
-        // 确保 current_map 不为空时再写入属性，防止硬错误
+        // 【极其重要】：计算真实物理夹角 AngleDiff
+        float angle_diff = current_start_angle - cached_angle;
+
+        // 处理 360° 跨界问题
+        // 例如：上一帧是 358°，当前帧跨越了零点变成 2°
+        // 2 - 358 = -356°，这显然不对。加上 360 得到真实的 4° 夹角。
+        if (angle_diff < -180.0f) {
+            angle_diff += 360.0f;
+        }
+
+        // 【异常防爆保护】：如果电机被卡住，或者串口丢包严重，导致角度差畸形
+        // 正常情况下，一帧跨度在 28° 左右。如果出现负数或超过 45°，说明物理层异常！
+        // 此时放弃动态插值，强制使用默认步长保底，防止后续数组越界或全零覆盖。
+        if (angle_diff < 0.0f || angle_diff > 45.0f) {
+            angle_diff = 28.2f; // 使用标准期待值 (0.705 * 40)
+        }
+
+        // 计算出针对这一帧的绝对精确单点步长
+        float dynamic_step = angle_diff / (float)LIDAR_POINTS_PER_FRAME;
+
+        // 【跨圈判定】：
+        // 如果当前角度(2°) 小于 缓存角度(358°)，并且差距巨大，说明肯定跨越了 0 度线！
+        // 这一步判定放在这里，是因为我们要画完“上一帧”之后，再去封闭“上一圈”的地图。
+        uint8_t is_wrap_around = 0;
+        if (current_start_angle < cached_angle && (cached_angle - current_start_angle) > 100.0f) {
+            is_wrap_around = 1;
+        }
+
+        // 渲染上一帧的 40 个点到 Map 中
         if (hlidar->current_map != NULL) {
-            hlidar->current_map->sweep_count = hlidar->sweep_count;
-            hlidar->current_map->timestamp = osKernelGetTickCount();
+            for (int i = 0; i < LIDAR_POINTS_PER_FRAME; i++) {
+                uint16_t dis = hlidar->cache.distances[i];
 
-            // ==========================================================
-            // 【硬核时间同步】：使用 5KHz 硬件采样率反推绝对物理时间
-            // ==========================================================
-            // 当前这包数据属于新的一圈，所以历史累积的点数就是上一圈的总点数
-            float real_scan_time = (float)hlidar->points_since_last_sweep / 5000.0f;
+                if (dis >= LIDAR_MIN_RANGE && dis <= LIDAR_MAX_RANGE) {
+                    // 动态插值计算当前点的绝对角度
+                    float final_angle = cached_angle + (float)i * dynamic_step;
 
-            // 安全保护：防止开机第一圈点数不全，限制在合理范围内 (8Hz~12Hz 对应 0.125s~0.083s)
-            if (real_scan_time > 0.07f && real_scan_time < 0.15f) {
-                hlidar->current_map->scan_time = real_scan_time;
-            } else {
-                hlidar->current_map->scan_time = 0.1f; // 异常时保底
+                    // 归一化到 360 度以内
+                    if (final_angle >= 360.0f) final_angle -= 360.0f;
+
+                    // 调用硬件指令快速转整型
+                    int angle_idx = lrintf(final_angle);
+
+                    // 二次防越界保护
+                    if (angle_idx >= 360) angle_idx -= 360;
+                    if (angle_idx < 0) angle_idx = 0;
+
+                    hlidar->current_map->distance[angle_idx] = dis;
+                }
             }
-
-            hlidar->current_map->point_count = hlidar->points_since_last_sweep;
-
-            // 清零计数器，重新开始为新的一圈计点！
-            hlidar->points_since_last_sweep = 0;
-            // ==========================================================
-
         }
-        sweep_completed = 1;
-    }
-    hlidar->last_start_angle = start_angle;
 
-    // 写入当前 Map
-    if (hlidar->current_map != NULL) {
-        for (i = 0; i < LIDAR_POINTS_PER_FRAME; i++) {
-            base = 4 + (i << 1);
-            dis = (uint16_t)(((uint16_t)payload[base + 1] << 8) | payload[base]);
+        // 累加时间同步的点数 (代表我们真实画完了 40 个点)
+        hlidar->points_since_last_sweep += LIDAR_POINTS_PER_FRAME;
 
-            // --- 修改后的过滤逻辑 ---
-            // 只有在 [MIN, MAX] 范围内的点才被视为有效
-            if (dis < LIDAR_MIN_RANGE || dis > LIDAR_MAX_RANGE) {
-                continue;
+        // ==========================================================
+        // 【封圈逻辑】：如果你画的这帧跨越了 0 度，说明【上一圈】正式圆满了！
+        // ==========================================================
+        if (is_wrap_around) {
+            hlidar->sweep_count++;
+            if (hlidar->current_map != NULL) {
+                hlidar->current_map->sweep_count = hlidar->sweep_count;
+                // 这里的 Timestamp 确实晚了一帧(约10ms)，但在低速自动驾驶中完全可接受
+                hlidar->current_map->timestamp = osKernelGetTickCount();
+
+                float real_scan_time = (float)hlidar->points_since_last_sweep / 5000.0f;
+                if (real_scan_time > 0.07f && real_scan_time < 0.15f) {
+                    hlidar->current_map->scan_time = real_scan_time;
+                } else {
+                    hlidar->current_map->scan_time = 0.1f;
+                }
+
+                hlidar->current_map->point_count = hlidar->points_since_last_sweep;
+                // 清零计数器，因为下一帧(当前刚收到的包)属于新的一圈
+                hlidar->points_since_last_sweep = 0;
             }
-            // -----------------------
-
-            final_angle = abs_angles[i]; // 这里只做赋值，声明已经移到了顶部
-            // 归一化到 360 度以内 (因为极限值只有 539，减一次必进 360 以内)
-            if (final_angle >= 360.0f) {
-                final_angle -= 360.0f;
-            }
-
-            // 直接呼叫硬件 VCVTR 指令，单周期完成浮点转整型+四舍五入
-            angle_idx = lrintf(final_angle);
-
-            // 干掉 % 360，省下十几个 CPU 周期
-            if (angle_idx >= 360) {
-                angle_idx -= 360;
-            }
-            hlidar->current_map->distance[angle_idx] = dis;
+            sweep_completed = 1; // 告诉 Task 3，赶紧把这一圈丢进队列里发走！
         }
     }
 
-
-    // ==========================================================
-    // 步骤 C：时间积分！
-    // ==========================================================
-    // 不管上面的 for 循环里有多少个点被 continue 丢弃了
-    // 只要代码走到了这里，说明硬件确确实实向我们发送了 40 个原始点
-    // 我们必须忠实地把这 40 个点加到时间累加器中
-    hlidar->points_since_last_sweep += LIDAR_POINTS_PER_FRAME;
+    // 3. 将刚刚收到的【当前帧】存入缓存，它将成为下一次解析的【上一帧】
+    hlidar->cache.start_angle = current_start_angle;
+    for (int i = 0; i < LIDAR_POINTS_PER_FRAME; i++) {
+        int base = 4 + (i << 1);
+        hlidar->cache.distances[i] = (uint16_t)(((uint16_t)payload[base + 1] << 8) | payload[base]);
+    }
+    // 标记缓存已填满，下一包到来时就可以开始插值计算了
+    hlidar->cache.is_valid = 1;
 
     return sweep_completed;
 }
@@ -252,7 +267,7 @@ void StartLidarRouteTask(void *argument) {
 
                 if (checksum == expected) {
                     // 解析当前帧，判断是否完成了一整圈 360°
-                    uint8_t is_sweep_done = Lidar_DecodeFrame_DSP(&hlidar1, frame);
+                    uint8_t is_sweep_done = Lidar_DecodeFrame_Dynamic(&hlidar1, frame);
 
                     if (is_sweep_done && hlidar1.current_map != NULL) {
                         // 1. 直接尝试发送给 ICP 任务队列
