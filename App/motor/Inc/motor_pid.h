@@ -14,7 +14,8 @@ typedef enum {
 
 // --- 初始化与定时任务 ---
 void Motor_PID_Init(void);
-void Task_MotorPID_Update(); // 放入调度器，10ms执行一次
+void Motor_YawRatePID_Init(void);
+void Task_MotorPID_Update(void); // 放入调度器，10ms执行一次
 
 // --- 速度控制接口 ---
 // 【修改】将原先的设置目标角度改为设置目标线速度和角速度

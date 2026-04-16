@@ -30,6 +30,7 @@ static uint32_t s_motion_path_sequence = 0U;
 static uint32_t s_trimmed_tf_version = 0U;
 static int s_last_projection_index = 0;
 static float s_progress_s_m = 0.0f;
+static float s_track_last_linear_cmd_m_s = 0.0f;
 
 typedef struct {
     Point2D point;
@@ -39,6 +40,183 @@ typedef struct {
     bool valid;
 } PathProjectionResult;
 
+typedef struct {
+    Point2D lookahead_point;
+    Point2D goal_point;
+    float goal_dist_m;
+    float heading_error_deg;
+    float linear_cmd_m_s;
+    float yaw_rate_cmd_deg_s;
+    bool valid;
+    bool goal_reached;
+} TrackingCommand;
+
+static Point2D Motion_MapPoint_To_BodyFrame(const RobotState_t* current_robot_state, const Point2D* map_point)
+{
+    Point2D body_point = {0};
+    float dx;
+    float dy;
+    float cos_theta;
+    float sin_theta;
+
+    if ((current_robot_state == NULL) || (map_point == NULL)) {
+        return body_point;
+    }
+
+    dx = map_point->x - current_robot_state->global_fast_x_m;
+    dy = map_point->y - current_robot_state->global_fast_y_m;
+    cos_theta = arm_cos_f32(current_robot_state->global_fast_theta_rad);
+    sin_theta = arm_sin_f32(current_robot_state->global_fast_theta_rad);
+
+    body_point.x = (cos_theta * dx) + (sin_theta * dy);
+    body_point.y = (-sin_theta * dx) + (cos_theta * dy);
+    return body_point;
+}
+
+static float Motion_Clamp(float value, float min_value, float max_value)
+{
+    if (value < min_value) {
+        return min_value;
+    }
+    if (value > max_value) {
+        return max_value;
+    }
+    return value;
+}
+
+static float Motion_Abs(float value)
+{
+    return (value >= 0.0f) ? value : -value;
+}
+
+static float Motion_Distance_Between(const Point2D* a, const Point2D* b)
+{
+    float distance = 0.0f;
+
+    if ((a == NULL) || (b == NULL)) {
+        return 0.0f;
+    }
+
+    arm_sqrt_f32(((a->x - b->x) * (a->x - b->x)) + ((a->y - b->y) * (a->y - b->y)), &distance);
+    return distance;
+}
+
+static float Motion_Apply_Linear_Slew(float desired_linear_m_s)
+{
+#if TRACK_ENABLE_LINEAR_SLEW
+    float max_step = TRACK_LINEAR_ACCEL_LIMIT_M_S2 * 0.01f;
+    float delta = desired_linear_m_s - s_track_last_linear_cmd_m_s;
+
+    if (delta > max_step) {
+        desired_linear_m_s = s_track_last_linear_cmd_m_s + max_step;
+    } else if (delta < -max_step) {
+        desired_linear_m_s = s_track_last_linear_cmd_m_s - max_step;
+    }
+#endif
+
+    s_track_last_linear_cmd_m_s = desired_linear_m_s;
+    return desired_linear_m_s;
+}
+
+static float Motion_Compute_Turn_Scale(float abs_heading_error_deg)
+{
+    if (abs_heading_error_deg <= TRACK_TURN_SLOWDOWN_START_DEG) {
+        return 1.0f;
+    }
+
+    if (abs_heading_error_deg >= TRACK_TURN_SLOWDOWN_STOP_DEG) {
+        return 0.0f;
+    }
+
+    return (TRACK_TURN_SLOWDOWN_STOP_DEG - abs_heading_error_deg) /
+           (TRACK_TURN_SLOWDOWN_STOP_DEG - TRACK_TURN_SLOWDOWN_START_DEG);
+}
+
+static float Motion_Compute_Goal_Scale(float goal_dist_m)
+{
+    if (goal_dist_m >= TRACK_GOAL_SLOWDOWN_DIST_M) {
+        return 1.0f;
+    }
+
+    if (goal_dist_m <= TRACK_GOAL_STOP_DIST_M) {
+        return 0.0f;
+    }
+
+    return (goal_dist_m - TRACK_GOAL_STOP_DIST_M) /
+           (TRACK_GOAL_SLOWDOWN_DIST_M - TRACK_GOAL_STOP_DIST_M);
+}
+
+static Point2D Motion_Select_Lookahead_Point(float current_progress_s)
+{
+    Point2D selected_point = {0};
+    float target_progress_s = current_progress_s + TRACK_LOOKAHEAD_DIST_M;
+
+    if (s_motion_path_len == 0U) {
+        return selected_point;
+    }
+
+    selected_point = s_motion_path_buffer[s_motion_path_len - 1U];
+    for (uint16_t i = 0U; i < s_motion_path_len; ++i) {
+        if (s_motion_path_arc_len[i] >= target_progress_s) {
+            selected_point = s_motion_path_buffer[i];
+            break;
+        }
+    }
+
+    return selected_point;
+}
+
+static TrackingCommand Motion_Build_Tracking_Command(const RobotState_t* current_robot_state)
+{
+    TrackingCommand cmd = {0};
+    Point2D robot_point;
+    Point2D lookahead_body_point;
+    float abs_heading_error_deg;
+    float desired_linear_m_s;
+
+    if ((current_robot_state == NULL) || (s_motion_path_len == 0U)) {
+        return cmd;
+    }
+
+    robot_point.x = current_robot_state->global_fast_x_m;
+    robot_point.y = current_robot_state->global_fast_y_m;
+    cmd.goal_point = s_motion_path_buffer[s_motion_path_len - 1U];
+    cmd.lookahead_point = Motion_Select_Lookahead_Point(s_progress_s_m);
+    cmd.goal_dist_m = Motion_Distance_Between(&robot_point, &cmd.goal_point);
+
+    lookahead_body_point = Motion_MapPoint_To_BodyFrame(current_robot_state, &cmd.lookahead_point);
+    cmd.heading_error_deg = Robot_RadToDeg(atan2f(lookahead_body_point.y, lookahead_body_point.x));
+    abs_heading_error_deg = Motion_Abs(cmd.heading_error_deg);
+
+    cmd.yaw_rate_cmd_deg_s = TRACK_HEADING_KP * cmd.heading_error_deg;
+    cmd.yaw_rate_cmd_deg_s = Motion_Clamp(cmd.yaw_rate_cmd_deg_s,
+                                          -TRACK_MAX_YAW_RATE_DEG_S,
+                                          TRACK_MAX_YAW_RATE_DEG_S);
+
+    cmd.goal_reached = (cmd.goal_dist_m <= TRACK_GOAL_STOP_DIST_M) &&
+                       (abs_heading_error_deg <= TRACK_HEADING_STOP_DEG);
+
+    if (cmd.goal_reached) {
+        cmd.linear_cmd_m_s = 0.0f;
+        cmd.yaw_rate_cmd_deg_s = 0.0f;
+        cmd.valid = true;
+        return cmd;
+    }
+
+    desired_linear_m_s = TRACK_CRUISE_LINEAR_M_S;
+    desired_linear_m_s *= Motion_Compute_Turn_Scale(abs_heading_error_deg);
+    desired_linear_m_s *= Motion_Compute_Goal_Scale(cmd.goal_dist_m);
+
+    if ((desired_linear_m_s > 0.0f) && (desired_linear_m_s < TRACK_MIN_LINEAR_M_S)) {
+        desired_linear_m_s = TRACK_MIN_LINEAR_M_S;
+    }
+
+    cmd.linear_cmd_m_s = Motion_Clamp(desired_linear_m_s, 0.0f, TRACK_MAX_LINEAR_M_S);
+    cmd.linear_cmd_m_s = Motion_Apply_Linear_Slew(cmd.linear_cmd_m_s);
+    cmd.valid = true;
+    return cmd;
+}
+
 static void Motion_Reset_Runtime_Path(void)
 {
     s_motion_path_len = 0U;
@@ -46,6 +224,7 @@ static void Motion_Reset_Runtime_Path(void)
     s_trimmed_tf_version = 0U;
     s_last_projection_index = 0;
     s_progress_s_m = 0.0f;
+    s_track_last_linear_cmd_m_s = 0.0f;
     memset(s_motion_path_arc_len, 0, sizeof(s_motion_path_arc_len));
     Reset_Trimmed_Path_State();
 }
@@ -78,6 +257,7 @@ static void Motion_Load_New_Path(const GlobalPathSnapshot* path_snapshot)
     s_trimmed_tf_version = 0U;
     s_last_projection_index = 0;
     s_progress_s_m = 0.0f;
+    s_track_last_linear_cmd_m_s = 0.0f;
 }
 
 static PathProjectionResult Motion_Project_On_Segment(const Point2D* p0,
@@ -116,8 +296,6 @@ static PathProjectionResult Motion_Project_On_Segment(const Point2D* p0,
     float dy = robot_y - result.point.y;
     float seg_len = 0.0f;
     arm_sqrt_f32(seg_len_sq, &seg_len); // 正确调用：传入指针接收结果
-
-    result.progress_s_m = base_s + (t * seg_len);
 
     result.progress_s_m = base_s + (t * seg_len);
     result.dist_sq_m = dx * dx + dy * dy;
@@ -300,7 +478,7 @@ void StartMotionTask(void *argument)
     PWM_Init();
     Encoder_Init();
     Motor_PID_Init();
-    void Motor_YawRatePID_Init(void);
+    Motor_YawRatePID_Init();
 
     Motion_Reset_Runtime_Path();
 
@@ -343,6 +521,7 @@ void StartMotionTask(void *argument)
         // ==========================================
         {
             RobotState_t current_robot_state;
+            TrackingCommand tracking_cmd;
             Get_Robot_State_Snapshot(&current_robot_state);
 
             // 在这里维护路径的 TF 执行视图与安全裁切结果：
@@ -351,17 +530,30 @@ void StartMotionTask(void *argument)
             // 3) 重建投影首点，并将裁切后的剩余路径发布给上位机
             Motion_Update_Trimmed_Path_View(&current_robot_state);
 
-            // [TODO] 在上述安全裁切路径视图稳定后，于此处接入 Pure Pursuit 轨迹跟踪。
-            // [TODO] 当前阶段严格只维护 TF 变换与裁切路径，不下发轨迹跟踪控制量。
-            // float desired_v, desired_w;
-            // Run_Pure_Pursuit(&desired_v, &desired_w);
+#if TRACK_ENABLE_AUTONOMOUS_FOLLOW
+            tracking_cmd = Motion_Build_Tracking_Command(&current_robot_state);
+            if (tracking_cmd.valid) {
+                if (tracking_cmd.goal_reached) {
+                    Motor_SetTargetVelocity(0.0f, 0.0f);
+                    Motor_NormalStop();
+                } else {
+                    Motor_SetTargetVelocity(tracking_cmd.linear_cmd_m_s,
+                                            tracking_cmd.yaw_rate_cmd_deg_s);
+                }
+            } else {
+                s_track_last_linear_cmd_m_s = 0.0f;
+                Motor_SetTargetVelocity(0.0f, 0.0f);
+            }
+#else
+            Motor_SetTargetVelocity(0.0f, 0.0f);
+#endif
         }
 
         // ==========================================
         // 3. 底层闭环控制层
         // ==========================================
-        // 执行 PID 运算并输出 PWM (传入 IMU 校准状态以供拦截)
-        Task_MotorPID_Update(&g_imu_is_calibrated);
+        // 执行 PID 运算并输出 PWM
+        Task_MotorPID_Update();
 
         // ==========================================
         // 4. 严格绝对延时

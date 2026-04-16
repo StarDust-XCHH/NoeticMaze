@@ -48,6 +48,22 @@
 #define PATH_SEARCH_FORWARD_WINDOW     20      // 最近投影索引局部前看窗口
 #define PATH_MIN_SEG_LEN_M             0.002f  // 路径线段最小有效长度，避免除零与数值放大
 
+// --- 线路追踪参数 ---
+#define TRACK_ENABLE_AUTONOMOUS_FOLLOW   1
+#define TRACK_LOOKAHEAD_DIST_M           0.18f   // 预瞄距离
+#define TRACK_HEADING_KP                 0.90f   // 航向误差P控制输出到角速度(deg/s per deg)
+#define TRACK_CRUISE_LINEAR_M_S          0.45f   // 默认巡航线速度
+#define TRACK_MAX_LINEAR_M_S             0.80f   // 上层最终输出线速度限制
+#define TRACK_MAX_YAW_RATE_DEG_S         30.0f   // 上层最终输出角速度限制
+#define TRACK_TURN_SLOWDOWN_START_DEG    30.0f   // 超过该航向误差开始降线速
+#define TRACK_TURN_SLOWDOWN_STOP_DEG     60.0f   // 超过该航向误差线速度归零
+#define TRACK_GOAL_SLOWDOWN_DIST_M       0.25f   // 接近终点开始降速
+#define TRACK_GOAL_STOP_DIST_M           0.05f   // 终点停车距离
+#define TRACK_HEADING_STOP_DEG           8.0f    // 终点附近允许停止的航向误差
+#define TRACK_MIN_LINEAR_M_S             0.08f   // 非停车状态下的最小前进线速度
+#define TRACK_ENABLE_LINEAR_SLEW         1
+#define TRACK_LINEAR_ACCEL_LIMIT_M_S2    1.20f   // 线速度斜坡限速
+
 
 // imu相关
 #define YAW_DRIFT_RATE  0.00391974f
