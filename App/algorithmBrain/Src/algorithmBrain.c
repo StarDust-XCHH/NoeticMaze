@@ -419,8 +419,8 @@ void StartAlgorithmBrain(void *argument)
 
 
             // TODO: 在这里接入最终目标
-            float goal_x = result.x;
-            float goal_y = result.y;
+            float goal_x = INITIAL_ODOM_X+ 0.7f;
+            float goal_y = INITIAL_ODOM_Y ;
             if (goal_x < 0.0f) goal_x = 0.0f;
             if (goal_y < 0.0f) goal_y = 0.0f;
             if (goal_x > planner_map_extent_m()) goal_x = planner_map_extent_m() - PLANNER_MAP_RES;

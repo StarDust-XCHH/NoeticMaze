@@ -21,6 +21,7 @@ TYPE_ACK = 0x04
 TYPE_STATUS = 0x01
 TYPE_MAP_ICP = 0x05
 TYPE_LIDAR_RAW = 0x02
+TYPE_PATH_ASTAR = 0x06   # <--- 新增：下位机A*路径包类型
 
 # --- PID 收敛评估阈值 ---
 CONVERGENCE_THRESHOLD = 2.0
@@ -69,6 +70,7 @@ class RobotGUI:
         self.auto_nav_enabled = False
         self.nav_path = []                  # 后端传回的规划路径
         self.cost_mask = None               # 后端传回的膨胀地图
+        self.stm32_path = []                # <--- 新增：存储下位机发来的A*路径
 
         try:
             self.ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.01)
@@ -154,6 +156,10 @@ class RobotGUI:
         # 4. 日志
         self.log_area = scrolledtext.ScrolledText(self.root, state='disabled', height=6)
         self.log_area.pack(fill="both", expand=True, padx=10, pady=5)
+
+    def update_stm32_path_ui(self, path):
+        self.stm32_path = path
+        self.render_map()
 
     # --- 导航交互逻辑 ---
     def toggle_auto_nav(self):
@@ -263,6 +269,19 @@ class RobotGUI:
             pts = np.array(pts, np.int32).reshape((-1, 1, 2))
             cv2.polylines(display_map, [pts], False, (0, 255, 0), 2)
 
+        # --- 新增：3. 渲染下位机 (STM32) A* 规划的路径 ---
+        if hasattr(self, 'stm32_path') and self.stm32_path and len(self.stm32_path) > 1:
+            pts = []
+            for p in self.stm32_path:
+                px = int((p[0] + MAP_OFFSET) / MAP_RES)
+                py = int((p[1] + MAP_OFFSET) / MAP_RES)
+                # 镜像翻转 Y 轴匹配当前显示层
+                flipped_py = MAP_DIM - py
+                pts.append([px, flipped_py])
+            pts = np.array(pts, np.int32).reshape((-1, 1, 2))
+            # 使用亮绿色 (0, 255, 0) 渲染线段，粗细为2
+            cv2.polylines(display_map, [pts], False, (0, 255, 0), 2)
+
         # 3. 渲染目标点 (Target Goal)
         if self.nav_goal:
             gx_px = int((self.nav_goal[0] + MAP_OFFSET) / MAP_RES)
@@ -333,6 +352,30 @@ class RobotGUI:
                             self.root.after(0, self.update_map_ui, ix, iy, it, dc, d_len, pts)
                         except: pass
                         buffer = buffer[total:]
+
+                    # --- 新增：下位机 A* 规划路径 ---
+                    elif pkg_type == TYPE_PATH_ASTAR and buffer.startswith(b'\xAA\x55'):
+                        if len(buffer) < 5: break
+                        d_len = struct.unpack('<H', buffer[3:5])[0]
+                        total = 5 + d_len + 1
+                        if len(buffer) < total: break
+
+                        # 校验和验证：范围从 Type(1) + DataLen(2) + Payload(d_len) -> buffer[2 : 5+d_len]
+                        if (sum(buffer[2:5+d_len]) & 0xFF) == buffer[5+d_len]:
+                            try:
+                                point_count = struct.unpack('<H', buffer[5:7])[0]
+                                # 确保有效载荷长度与点数匹配 (每个点 2 个 float 共 8 字节)
+                                if point_count > 0 and (point_count * 8 <= d_len - 2):
+                                    pts_format = f'<{point_count * 2}f'
+                                    pts_data = struct.unpack(pts_format, buffer[7:7 + point_count * 8])
+                                    # 将连续的平铺一维元组转换为 (x, y) 的列表
+                                    path = [(pts_data[i], pts_data[i+1]) for i in range(0, len(pts_data), 2)]
+                                    self.root.after(0, self.update_stm32_path_ui, path)
+                            except Exception as e:
+                                print(f"A* Path Parse Error: {e}")
+
+                        buffer = buffer[total:]
+                    # --------------------------------
                     else: buffer = buffer[2:]
             time.sleep(0.001)
 
