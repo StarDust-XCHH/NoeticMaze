@@ -10,8 +10,14 @@
 #include "roboConifg.h"
 #include "robot_state.h" // 引入刚才写的安全状态读取接口
 #include <math.h>
+#include <string.h>
+#include <stdlib.h>
 #include "arm_math.h" // 引入 CMSIS-DSP 库加速三角函数
 #include "map_core.h"
+#include "planner_core.h"
+#include "Cstar_map_core.h"
+#include "path_smoother.h"
+#include "planner_config.h"
 
 // 1. 声明身份：我是合法的 SLAM 线程！
 #define I_AM_SLAM_THREAD 1
@@ -22,10 +28,12 @@
 #define PI 3.14159265358979f
 #endif
 
-
 // 1. 引入雷达数据队列句柄
 extern osMessageQueueId_t LidarQueueHandle;
 extern osMessageQueueId_t LidarFreeQueueHandle;
+
+// 引入Astar请求队列
+extern osMessageQueueId_t ReqQueueHandle;
 
 // --- ICP 内部维护的参考帧 (Target Point Cloud) ---
 static uint32_t ref_num_points = 0;
@@ -37,14 +45,84 @@ static Pose last_raw_odom = {0.0f, 0.0f, 0.0f};
 // 在文件头部静态变量区新增
 static Pose last_ref_pose = {0.0f, 0.0f, 0.0f};
 
+static float s_last_goal_x = 0.0f;
+static float s_last_goal_y = 0.0f;
+static bool s_goal_initialized = false;
+static uint32_t s_planner_map_version = 0;
+static uint32_t s_last_replan_tick = 0;
+static uint8_t s_blocked_streak = 0;
+static uint8_t s_blocked_map_storage[MAX_MAP_BYTES];
+static ServerMap s_blocked_map = {s_blocked_map_storage, PLANNER_MAP_RES, MAX_GRID_SIZE};
+
 // --- 【关键修复：将大数组放入全局 BSS 段，防止任务爆栈】 ---
 Point ref_scan[SCAN_SIZE];
 Point ref_normals[SCAN_SIZE];
 uint8_t ref_mask[SCAN_SIZE];
 
 static Point curr_scan[SCAN_SIZE];
-static uint8_t   curr_mask[SCAN_SIZE];
+static uint8_t curr_mask[SCAN_SIZE];
 // ------------------------------------------------------------
+// 辅助函数，计算是否路线被挡住
+static inline float planner_map_extent_m(void) {
+    return (float)MAX_GRID_SIZE * PLANNER_MAP_RES;
+}
+
+static inline void world_to_planner_cell(float x, float y, int* gx, int* gy) {
+    float inv_res = 1.0f / PLANNER_MAP_RES;
+    *gx = (int)(x * inv_res);
+    *gy = (int)(y * inv_res);
+}
+
+static bool planner_cell_is_blocked(ServerMap* map_view, int gx, int gy, bool is_return) {
+    if (gx < 0 || gx >= map_view->grid_size || gy < 0 || gy >= map_view->grid_size) {
+        return true;
+    }
+
+    uint8_t val = get_grid_val(map_view, gx, gy);
+    if (val == 1) {
+        return true;
+    }
+    if (is_return && val == 0) {
+        return true;
+    }
+    return false;
+}
+
+static bool path_is_blocked(ServerMap* blocked_view, bool is_return, const GlobalPathSnapshot* path_snapshot) {
+    if (path_snapshot == NULL || path_snapshot->path_ptr == NULL || path_snapshot->path_len <= 0) {
+        return true;
+    }
+
+    for (int i = 0; i < path_snapshot->path_len; ++i) {
+        int gx, gy;
+        world_to_planner_cell(path_snapshot->path_ptr[i].x, path_snapshot->path_ptr[i].y, &gx, &gy);
+        if (planner_cell_is_blocked(blocked_view, gx, gy, is_return)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+// 发送规划路线请求
+static void send_planner_request(uint8_t cmd_type,
+                                 uint8_t reason,
+                                 uint32_t map_version,
+                                 bool is_return,
+                                 float start_x,
+                                 float start_y,
+                                 float goal_x,
+                                 float goal_y) {
+    PlannerReqMsg req;
+    req.cmd_type = cmd_type;
+    req.is_return = is_return;
+    req.reason = reason;
+    req.map_version = map_version;
+    req.target_x = goal_x;
+    req.target_y = goal_y;
+    req.start_x = start_x;
+    req.start_y = start_y;
+    osMessageQueuePut(ReqQueueHandle, &req, 0, 0);
+}
 
 void StartAlgorithmBrain(void *argument)
 {
@@ -57,8 +135,6 @@ void StartAlgorithmBrain(void *argument)
 #if ENABLE_LIDAR_BT_TX
         osDelay(100);
 #else
-
-
         // 1. 阻塞等待雷达一帧数据就绪
         status = osMessageQueueGet(LidarQueueHandle, &received_map, NULL, osWaitForever);
 
@@ -71,7 +147,6 @@ void StartAlgorithmBrain(void *argument)
             // 1. 获取对应时刻的安全全局状态
             RobotState_t current_robot_state;
             Get_Robot_State_Snapshot(&current_robot_state);
-
 
             // ==========================================
             // 【新增】：IMU 状态拦截
@@ -91,7 +166,6 @@ void StartAlgorithmBrain(void *argument)
             curr_raw_odom.x = current_robot_state.x_encoder;
             curr_raw_odom.y = current_robot_state.y_encoder;
             curr_raw_odom.theta = current_robot_state.yaw * (PI / 180.0f); // Deg to Rad
-
 
             // 你的 yaw 是 0~360 逆时针，直接转弧度
             float yaw_rad = current_robot_state.yaw * (PI / 180.0f);
@@ -136,7 +210,6 @@ void StartAlgorithmBrain(void *argument)
                 }
             }
 
-
             // ==========================================
             // 【关键修复】：调用运动畸变补偿 (消除旋转漂移)
             // ==========================================
@@ -155,7 +228,6 @@ void StartAlgorithmBrain(void *argument)
 
             // 传给运动畸变补偿函数
             motion_deskew(curr_scan, curr_mask, current_linear_v, current_angular_w, real_scan_time);
-
 
             // ==========================================
             // 步骤 B: ICP 核心逻辑
@@ -214,7 +286,7 @@ void StartAlgorithmBrain(void *argument)
                 // 2. 调用点到线 ICP 算法
                 // 【进阶机制：里程计信任死区】
                 // 如果本帧相比上一帧，里程计的平移小于 2mm，且旋转小于 0.005 rad
-                if ((dx_local*dx_local + dy_local*dy_local) <ZUPT_DEADZONE_DIST_SQ && fabsf(dtheta) < ZUPT_DEADZONE_ANGLE_RAD) {
+                if ((dx_local*dx_local + dy_local*dy_local) < ZUPT_DEADZONE_DIST_SQ && fabsf(dtheta) < ZUPT_DEADZONE_ANGLE_RAD) {
                     // 小车基本静止或移动极慢，直接沿用先验 Guess，跳过 ICP 计算！
                     result = guess;
                 } else {
@@ -308,7 +380,6 @@ void StartAlgorithmBrain(void *argument)
                 }
             }
 
-
             // ==========================================
             // 步骤 C 结束: 安全地将地图增量交接给发送线程
             // ==========================================
@@ -335,24 +406,89 @@ void StartAlgorithmBrain(void *argument)
                 osMutexRelease(MapDataMutexHandle);
             }
 
-
-
-            // [TODO] 在这里加入是否重新规划的判断
-
-
-            // [TODO] 根据上述判断，决定是否对栅格地图降采样并发送给AStar线程
-
-
             // ==========================================
-            // 步骤 D: 内存回收 (Memory Release)
+            // 步骤 D: 维护 planner 图并判定是否触发重规划
             // ==========================================
-            // 【至关重要】处理完后，必须将内存块归还给空闲队列
+            ServerMap planner_base_map;
+            process_map_update(&planner_base_map);
+            build_blocked_view_from_base(&planner_base_map, &s_blocked_map);
+            s_planner_map_version++;
+
+
+            // TODO: 在这里接入最终目标
+            float goal_x = result.x;
+            float goal_y = result.y;
+            if (goal_x < 0.0f) goal_x = 0.0f;
+            if (goal_y < 0.0f) goal_y = 0.0f;
+            if (goal_x > planner_map_extent_m()) goal_x = planner_map_extent_m() - PLANNER_MAP_RES;
+            if (goal_y > planner_map_extent_m()) goal_y = planner_map_extent_m() - PLANNER_MAP_RES;
+
+            PlannerReplanReason replan_reason = PLANNER_REPLAN_REASON_NONE;
+            GlobalPathSnapshot path_snapshot;
+            bool has_path_snapshot = Get_Global_Path_Snapshot(&path_snapshot);
+            int start_cell_x, start_cell_y, last_goal_cell_x, last_goal_cell_y, goal_cell_x, goal_cell_y;
+            world_to_planner_cell(result.x, result.y, &start_cell_x, &start_cell_y);
+            world_to_planner_cell(goal_x, goal_y, &goal_cell_x, &goal_cell_y);
+            world_to_planner_cell(s_last_goal_x, s_last_goal_y, &last_goal_cell_x, &last_goal_cell_y);
+
+            if (!s_goal_initialized || abs(goal_cell_x - last_goal_cell_x) > PLANNER_REPLAN_GOAL_SHIFT_CELLS ||
+                abs(goal_cell_y - last_goal_cell_y) > PLANNER_REPLAN_GOAL_SHIFT_CELLS) {
+                replan_reason = PLANNER_REPLAN_REASON_GOAL_CHANGED;
+            } else if (!has_path_snapshot) {
+                replan_reason = PLANNER_REPLAN_REASON_NO_PATH;
+            } else {
+                int path_start_cell_x, path_start_cell_y;
+                world_to_planner_cell(path_snapshot.path_ptr[0].x, path_snapshot.path_ptr[0].y,
+                                      &path_start_cell_x, &path_start_cell_y);
+
+                if (abs(start_cell_x - path_start_cell_x) > PLANNER_REPLAN_DRIFT_CELLS ||
+                    abs(start_cell_y - path_start_cell_y) > PLANNER_REPLAN_DRIFT_CELLS) {
+                    replan_reason = PLANNER_REPLAN_REASON_START_DRIFT;
+                } else if (path_is_blocked(&s_blocked_map, false, &path_snapshot)) {
+                    if (s_blocked_streak < 255) {
+                        s_blocked_streak++;
+                    }
+                    if (s_blocked_streak >= PLANNER_REPLAN_BLOCKED_HITS) {
+                        replan_reason = PLANNER_REPLAN_REASON_PATH_BLOCKED;
+                    }
+                } else {
+                    s_blocked_streak = 0;
+                }
+            }
+
+            uint32_t now_tick = osKernelGetTickCount();
+            bool allow_replan = (now_tick - s_last_replan_tick) >= pdMS_TO_TICKS(PLANNER_REPLAN_MIN_INTERVAL_MS);
+
+            if (replan_reason != PLANNER_REPLAN_REASON_NONE && allow_replan) {
+                if (replan_reason == PLANNER_REPLAN_REASON_PATH_BLOCKED) {
+                    g_abort_astar = true;
+                }
+
+                send_planner_request(
+                    s_goal_initialized ? PLANNER_REQ_REPLAN : PLANNER_REQ_NEW_GOAL,
+                    (uint8_t)replan_reason,
+                    s_planner_map_version,
+                    false,
+                    result.x,
+                    result.y,
+                    goal_x,
+                    goal_y
+                );
+
+                s_last_goal_x = goal_x;
+                s_last_goal_y = goal_y;
+                s_goal_initialized = true;
+                s_last_replan_tick = now_tick;
+                if (replan_reason != PLANNER_REPLAN_REASON_PATH_BLOCKED) {
+                    s_blocked_streak = 0;
+                }
+            }
+
+            // 步骤 E: 归还内存块给 Lidar 空闲队列
             osMessageQueuePut(LidarFreeQueueHandle, &received_map, 0, 0);
             received_map = NULL;
-
+            icp_frame_counter++;
         }
-
 #endif
-
-    } // for(;;)
+    }
 }

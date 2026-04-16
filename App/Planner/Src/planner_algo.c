@@ -10,8 +10,6 @@
 
 #include "priority_queue.h"
 
-
-
 // 2. A* 算法静态内存
 static uint16_t s_g_score[MAX_CELLS];
 static uint8_t s_came_from_dir[MAX_CELLS];
@@ -142,7 +140,9 @@ int astar_plan(ServerMap* map, Point2D start, Point2D goal, Point2D* prev_path, 
 
     int search_start_idx = search_start_x * map->grid_size + search_start_y;
     s_g_score[search_start_idx] = 0;
-    pq_push(&pq, search_start_idx, 0);
+    if (!pq_push(&pq, search_start_idx, 0)) {
+        return 0;
+    }
 
     int dx[8] = {0, 0, 1, -1, 1, 1, -1, -1};
     int dy[8] = {1, -1, 0, 0, 1, -1, 1, -1};
@@ -205,9 +205,16 @@ int astar_plan(ServerMap* map, Point2D start, Point2D goal, Point2D* prev_path, 
                 int max_d = (h_dx > h_dy) ? h_dx : h_dy;
                 uint16_t h = 14 * min_d + 10 * (max_d - min_d);
 
-                pq_push(&pq, n_idx, tg + h + 1);
+                if (!pq_push(&pq, n_idx, tg + h + 1)) {
+                    return 0;
+                }
             }
         }
     }
+
+    if (pq.overflowed) {
+        return 0;
+    }
+
     return path_len;
 }

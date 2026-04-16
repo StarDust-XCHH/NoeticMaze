@@ -60,6 +60,17 @@ static inline void clear_all_affinity(ServerMap* map) {
     }
 }
 
-void process_map_update(uint8_t* payload, uint32_t delta_count, int grid_size, float res);
+/**
+ * @brief 将 2cm SLAM 全局图重建为 10cm planner 基础图并写入 planner 写缓冲。
+ * @param planner_map_out 输出 planner 基础图视图；可为 NULL。
+ */
+void process_map_update(ServerMap* planner_map_out);
+
+/**
+ * @brief 基于 planner 基础图构建“路径阻断判定专用”的硬膨胀视图。
+ * @param src_map 基础 planner 图。
+ * @param dst_map 目标 inflated 图；可与基础图不同。
+ */
+void build_blocked_view_from_base(const ServerMap* src_map, ServerMap* dst_map);
 
 #endif //STM32_PLANNER_PC_TEST_MAP_CORE_H

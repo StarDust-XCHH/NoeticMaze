@@ -25,7 +25,16 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "planner_core.h"
+#include "lidar.h"
 
+#ifndef STATIC_ASSERT
+#define STATIC_ASSERT(expr, msg) _Static_assert((expr), msg)
+#endif
+
+STATIC_ASSERT(sizeof(PlannerReqMsg) == 24, "PlannerReqMsg size changed: update ReqQueue item size if CubeMX regenerates freertos.c");
+STATIC_ASSERT(sizeof(PlannerRespMsg) == 12, "PlannerRespMsg size changed: update RespQueue item size if CubeMX regenerates freertos.c");
+STATIC_ASSERT(sizeof(LidarMap_t*) == 4, "LidarQueue currently expects pointer-sized items on 32-bit STM32");
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -172,13 +181,13 @@ void MX_FREERTOS_Init(void) {
 
   /* Create the queue(s) */
   /* creation of LidarQueue */
-  LidarQueueHandle = osMessageQueueNew (3, 4, &LidarQueue_attributes);
+  LidarQueueHandle = osMessageQueueNew(3, sizeof(LidarMap_t*), &LidarQueue_attributes);
 
   /* creation of ReqQueue */
-  ReqQueueHandle = osMessageQueueNew (3, 20, &ReqQueue_attributes);
+  ReqQueueHandle = osMessageQueueNew(3, sizeof(PlannerReqMsg), &ReqQueue_attributes);
 
   /* creation of RespQueue */
-  RespQueueHandle = osMessageQueueNew (2, 12, &RespQueue_attributes);
+  RespQueueHandle = osMessageQueueNew(2, sizeof(PlannerRespMsg), &RespQueue_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -241,4 +250,3 @@ void StartDefaultTask(void *argument)
 /* USER CODE BEGIN Application */
 
 /* USER CODE END Application */
-

@@ -4,7 +4,6 @@
 
 #include "planner_core.h"
 
-
 //
 // Created by lmtgy on 2026/4/15.
 // 规划器主控模块实现
@@ -20,7 +19,6 @@
 #include "planner_config.h"
 #include "cmsis_os.h"
 
-
 // 仅保留读取 DWT 计数值的宏，取消初始化相关的宏
 #define DWT_CYCCNT  *(volatile uint32_t *)0xE0001004
 
@@ -30,7 +28,7 @@ extern osMessageQueueId_t RespQueueHandle;
 // ==========================================
 // 【修复核心】：在这里真正实例化全局公告板，分配内存！
 // ==========================================
-GlobalPathState g_current_safe_path = {NULL, 0, 0.0f, 0};
+volatile GlobalPathState g_current_safe_path = {NULL, 0, 0.0f, 0};
 // ==========================================
 // 算法全局内存池 (BSS段)
 // ==========================================
@@ -82,15 +80,14 @@ void StartPlannerTask(void *argument) {
         taskEXIT_CRITICAL();
 
         // 5. 【底图同步】：防止 SLAM 在下一帧丢失静态环境
-        memcpy(s_write_map_ptr, s_read_map_ptr, MAX_MAP_BYTES);
+        memcpy((void*)s_write_map_ptr, (void*)s_read_map_ptr, MAX_MAP_BYTES);
 
         // 绑定最新地图给核心算法
-        g_map.grid = s_read_map_ptr;
+        g_map.grid = (uint8_t*)s_read_map_ptr;
         g_map.grid_size = MAX_GRID_SIZE;
-        g_map.res = PLANNER_MAP_RES; // 【修复】：每次兜底赋值，彻底杜绝除零崩溃
+        g_map.res = PLANNER_MAP_RES;
 
-        // 增加早退保护，如果还是拿到了异常分辨率，直接拒绝规划
-        if (g_map.res <= 0.0f) {
+        if (g_map.grid == NULL || g_map.res <= 0.0f) {
             continue;
         }
 
@@ -101,7 +98,7 @@ void StartPlannerTask(void *argument) {
         // 打下开始时间戳
         uint32_t start_cycles = DWT_CYCCNT;
 
-        if (req.cmd_type == 1 || req.cmd_type == 2) {
+        if (req.cmd_type == PLANNER_REQ_NEW_GOAL || req.cmd_type == PLANNER_REQ_REPLAN) {
             Point2D start = {req.start_x, req.start_y};
             Point2D goal  = {req.target_x, req.target_y};
 
@@ -133,12 +130,13 @@ void StartPlannerTask(void *argument) {
         // 如果中途没有被 SLAM 打断，且生成了有效路径，则发送结果
         if (!g_abort_astar && final_path_len > 0) {
             // 【修改点 1】：不再塞入队列，而是更新全局公告板
-            // 使用临界区保护全局变量的批量更新，防止读取线程读到一半发生上下文切换
+            // sequence 快照协议：写前置奇数，写后置偶数，读者仅接受前后相等且为偶数的快照
             taskENTER_CRITICAL();
+            g_current_safe_path.sequence++;
             g_current_safe_path.path_ptr = current_out_buf;
             g_current_safe_path.path_len = final_path_len;
             g_current_safe_path.exec_time_ms = elapsed_ms;
-            g_current_safe_path.sequence++; // 序列号递增，证明这是新数据
+            g_current_safe_path.sequence++;
             taskEXIT_CRITICAL();
 
             // 【修改点 2】：广播事件，唤醒所有正在等待该事件的线程
@@ -150,3 +148,27 @@ void StartPlannerTask(void *argument) {
     }
 }
 
+bool Get_Global_Path_Snapshot(GlobalPathSnapshot* out_snapshot) {
+    uint32_t seq_begin;
+    uint32_t seq_end;
+
+    if (out_snapshot == NULL) {
+        return false;
+    }
+
+    do {
+        seq_begin = g_current_safe_path.sequence;
+        if ((seq_begin & 1U) != 0U) {
+            continue;
+        }
+
+        out_snapshot->path_ptr = g_current_safe_path.path_ptr;
+        out_snapshot->path_len = g_current_safe_path.path_len;
+        out_snapshot->exec_time_ms = g_current_safe_path.exec_time_ms;
+        out_snapshot->sequence = seq_begin;
+
+        seq_end = g_current_safe_path.sequence;
+    } while (seq_begin != seq_end || (seq_end & 1U) != 0U);
+
+    return (out_snapshot->path_ptr != NULL && out_snapshot->path_len > 0);
+}

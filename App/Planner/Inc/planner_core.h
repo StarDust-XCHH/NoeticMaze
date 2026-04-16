@@ -5,7 +5,6 @@
 #ifndef NOETICMAZE_PLANNER_CORE_H
 #define NOETICMAZE_PLANNER_CORE_H
 
-
 #ifndef CSTAR_PLANNER_CORE_H
 #define CSTAR_PLANNER_CORE_H
 
@@ -19,13 +18,28 @@
 // ==========================================
 // 线程间通信：控制流队列结构体 (极简，用于极速入队)
 // ==========================================
+typedef enum {
+    PLANNER_REQ_NEW_GOAL = 1,
+    PLANNER_REQ_REPLAN = 2
+} PlannerCmdType;
+
+typedef enum {
+    PLANNER_REPLAN_REASON_NONE = 0,
+    PLANNER_REPLAN_REASON_GOAL_CHANGED = 1,
+    PLANNER_REPLAN_REASON_NO_PATH = 2,
+    PLANNER_REPLAN_REASON_PATH_BLOCKED = 3,
+    PLANNER_REPLAN_REASON_START_DRIFT = 4
+} PlannerReplanReason;
+
 typedef struct {
-    uint8_t cmd_type;   // 1: 正常规划 (New Goal) | 2: 紧急避障重算 (Re-plan)
-    bool is_return;     // true: 返程模式 (未知区域视为障碍) | false: 探索模式
-    float target_x;     // 物理目标 X 坐标 (米)
-    float target_y;     // 物理目标 Y 坐标 (米)
-    float start_x;      // 当前小车 X 坐标 (也可由 A* 线程自己去全局读，这里作为参数传入更解耦)
-    float start_y;      // 当前小车 Y 坐标
+    uint8_t cmd_type;               // [`PlannerCmdType`](App/Planner/Inc/planner_core.h)
+    bool is_return;                 // true: 返程模式 (未知区域视为障碍) | false: 探索模式
+    uint8_t reason;                 // [`PlannerReplanReason`](App/Planner/Inc/planner_core.h)
+    uint32_t map_version;           // 本次请求对应的 planner 地图版本
+    float target_x;                 // 物理目标 X 坐标 (米)
+    float target_y;                 // 物理目标 Y 坐标 (米)
+    float start_x;                  // 当前小车 X 坐标
+    float start_y;                  // 当前小车 Y 坐标
 } PlannerReqMsg;
 
 typedef struct {
@@ -41,11 +55,20 @@ typedef struct {
     Point2D* path_ptr;      // 指向最新有效乒乓缓冲片的指针
     int path_len;           // 最新路径的长度
     float exec_time_ms;     // 算法耗时
-    uint32_t sequence;      // 更新序列号 (每次更新 +1)
+    uint32_t sequence;      // 更新序列号 (偶数=稳定快照, 奇数=写入中)
 } GlobalPathState;
 
+typedef struct {
+    Point2D* path_ptr;
+    int path_len;
+    float exec_time_ms;
+    uint32_t sequence;
+} GlobalPathSnapshot;
+
 // 暴露全局公告板
-extern GlobalPathState g_current_safe_path;
+extern volatile GlobalPathState g_current_safe_path;
+
+bool Get_Global_Path_Snapshot(GlobalPathSnapshot* out_snapshot);
 
 // 暴露事件标志组句柄 (用于唤醒所有沉睡的读取线程)
 extern osEventFlagsId_t PathEventHandle;
@@ -61,7 +84,6 @@ extern uint8_t* volatile s_write_map_ptr;
 
 // 2. 全局打断标志 (SLAM 发现原路径被堵死时，立刻将其置为 true)
 extern volatile bool g_abort_astar;
-
 
 // ==========================================
 // 任务入口

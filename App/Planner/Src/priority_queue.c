@@ -5,21 +5,21 @@
 #include "priority_queue.h"
 #include "planner_config.h"
 
-// 1. 【删除这行】：原来独占的静态内存，现在不需要了
-// static uint32_t s_pq_data[MAX_PQ_SIZE];
-
-// 2. 修改初始化函数
 void pq_init(PriorityQueue* pq) {
     // 将指针指向共享内存池的阶段 1 区域
     pq->data = g_mem_pool.pq_data;
     pq->size = 0;
     pq->capacity = MAX_PQ_SIZE;
+    pq->overflowed = false;
 }
 
 // ---------------- 最小堆实现 (极限优化版) ----------------
 
-void pq_push(PriorityQueue* pq, uint16_t idx, uint16_t f) {
-    if (pq->size >= pq->capacity) return;
+bool pq_push(PriorityQueue* pq, uint16_t idx, uint16_t f) {
+    if (pq->size >= pq->capacity) {
+        pq->overflowed = true;
+        return false;
+    }
 
     // 【核心优化 1】：打包数据。f 放高 16 位，idx 放低 16 位
     uint32_t element = ((uint32_t)f << 16) | idx;
@@ -39,6 +39,7 @@ void pq_push(PriorityQueue* pq, uint16_t idx, uint16_t f) {
         i = p;
     }
     pq->data[i] = element;
+    return true;
 }
 
 bool pq_pop(PriorityQueue* pq, uint16_t* idx, uint16_t* f) {
