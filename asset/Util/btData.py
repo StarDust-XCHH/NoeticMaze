@@ -22,6 +22,7 @@ TYPE_STATUS = 0x01
 TYPE_MAP_ICP = 0x05
 TYPE_LIDAR_RAW = 0x02
 TYPE_PATH_ASTAR = 0x06   # <--- 新增：下位机A*路径包类型
+TYPE_GOAL_CMD = 0x07     # <--- 新增：目标点下发包类型
 
 # --- PID 收敛评估阈值 ---
 CONVERGENCE_THRESHOLD = 2.0
@@ -199,6 +200,9 @@ class RobotGUI:
         self.nav_goal = (phys_x, phys_y)
         self.write_log(f"设置目标点: X={phys_x:.2f}, Y={phys_y:.2f}")
 
+        # <--- 新增：向 STM32 下发目标点
+        self.send_goal_command(phys_x, phys_y)
+
         if not self.auto_nav_enabled:
             self.auto_nav_enabled = True
             self.btn_auto_nav.config(text="停止自动导航", bg="red", fg="white")
@@ -206,6 +210,17 @@ class RobotGUI:
 
         self.update_nav_ui()
         self.render_map()
+
+        # <--- 新增：目标点封装与串口发送函数
+    def send_goal_command(self, x, y):
+        try:
+            # 数据结构: Header(2) + Type(1) + goal_x(4) + goal_y(4) = 11 bytes
+            p = struct.pack('<HBff', HEX_SEND_HEADER, TYPE_GOAL_CMD, float(x), float(y))
+            # 加上1字节校验和
+            self.ser.write(p + struct.pack('<B', sum(p) & 0xFF))
+            self.write_log(f"-> 下发新目标点至STM32: ({x:.2f}, {y:.2f})", "blue")
+        except Exception as e:
+            print(f"发送目标点失败: {e}")
 
     # --- 视觉与渲染 ---
     def bind_mouse_events(self):

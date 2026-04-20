@@ -60,6 +60,16 @@ typedef struct {
     uint8_t  checksum;
 } AckPacket_t;
 
+// <--- 新增：目标点下发结构体
+typedef struct {
+    uint16_t header;     // 0x5A5A
+    uint8_t  type;       // 0x07 (目标点设定)
+    float    goal_x;     // 预期目标 X (m)
+    float    goal_y;     // 预期目标 Y (m)
+    uint8_t  checksum;
+} GoalPacket_t;
+
+
 typedef struct {
     uint16_t header;       // 0x55AA
     uint8_t  type;         // 0x05
