@@ -54,6 +54,20 @@ static uint8_t s_blocked_streak = 0;
 static uint8_t s_blocked_map_storage[MAX_MAP_BYTES];
 static ServerMap s_blocked_map = {s_blocked_map_storage, PLANNER_MAP_RES, MAX_GRID_SIZE};
 
+
+// <--- 新增：记录用户下发的最新目标点 (赋初值避免刚开机无目标)
+static float g_user_goal_x = INITIAL_ODOM_X + 0.7f;
+static float g_user_goal_y = INITIAL_ODOM_Y;
+
+// <--- 新增：供串口接收线程调用的安全写入接口
+void Set_New_Target_Goal(float x, float y) {
+    taskENTER_CRITICAL(); // 挂起调度器，防止被算法线程抢占造成数据撕裂
+    g_user_goal_x = x;
+    g_user_goal_y = y;
+    taskEXIT_CRITICAL();
+}
+
+
 // --- 【关键修复：将大数组放入全局 BSS 段，防止任务爆栈】 ---
 Point ref_scan[SCAN_SIZE];
 Point ref_normals[SCAN_SIZE];
@@ -419,10 +433,18 @@ void StartAlgorithmBrain(void *argument)
             build_blocked_view_from_base(&planner_base_map, &s_blocked_map);
             s_planner_map_version++;
 
+            // ==========================================
+            // 【修改】：使用线程安全的方式读取最新的目标点
+            // ==========================================
+            float goal_x;
+            float goal_y;
+            taskENTER_CRITICAL();
+            goal_x = g_user_goal_x;
+            goal_y = g_user_goal_y;
+            taskEXIT_CRITICAL();
+
 
             // TODO: 在这里接入最终目标
-            float goal_x = INITIAL_ODOM_X+ 0.7f;
-            float goal_y = INITIAL_ODOM_Y ;
             if (goal_x < 0.0f) goal_x = 0.0f;
             if (goal_y < 0.0f) goal_y = 0.0f;
             if (goal_x > planner_map_extent_m()) goal_x = planner_map_extent_m() - PLANNER_MAP_RES;

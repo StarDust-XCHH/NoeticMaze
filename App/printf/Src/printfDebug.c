@@ -18,7 +18,7 @@
 #include "motor_pid.h"
 #include "planner_core.h"
 #include "roboConifg.h"
-
+#include "algorithmBrain.h" // <--- 新增：为了调用 Set_New_Target_Goal()
 
 
 // 引入外部句柄
@@ -195,6 +195,9 @@ static void Bluetooth_Start_Receive(void) {
 /**
  * @brief 蓝牙指令解析逻辑 (线程安全版)
  */
+/**
+ * @brief 蓝牙指令解析逻辑 (线程安全版)
+ */
 static void Process_Bluetooth_Command(void) {
     if (!bt_frame_ready) return;
 
@@ -205,38 +208,51 @@ static void Process_Bluetooth_Command(void) {
     bt_frame_ready = 0;
     taskEXIT_CRITICAL();
 
-    for (uint16_t i = 0; i <= (BT_RX_BUF_SIZE - sizeof(ControlPacket_t)); i++) {
+    // 考虑到 GoalPacket_t 和 ControlPacket_t 大小一致 (12字节)，统一减去 12
+    for (uint16_t i = 0; i <= (BT_RX_BUF_SIZE - 12); i++) {
         if (local_buf[i] == 0x5A && local_buf[i+1] == 0x5A) {
-            ControlPacket_t *pkt = (ControlPacket_t *)&local_buf[i];
+            uint8_t type = local_buf[i+2];
 
-            if (pkt->type != 0x03) continue;
+            if (type == 0x03) {
+                ControlPacket_t *pkt = (ControlPacket_t *)&local_buf[i];
+                uint8_t sum = 0;
+                uint8_t *ptr = (uint8_t *)pkt;
+                for (int j = 0; j < sizeof(ControlPacket_t) - 1; j++) sum += ptr[j];
 
-            uint8_t sum = 0;
-            uint8_t *ptr = (uint8_t *)pkt;
-            for (int j = 0; j < sizeof(ControlPacket_t) - 1; j++) {
-                sum += ptr[j];
+                if (sum == pkt->checksum) {
+                    Motor_SetTargetVelocity(pkt->linear_vel, pkt->yaw_rate);
+
+                    static AckPacket_t ack;
+                    ack.header = 0x5A5A;
+                    ack.type = 0x04;
+                    ack.yaw_rate = pkt->yaw_rate;
+                    ack.linear_vel = pkt->linear_vel;
+
+                    uint8_t ack_sum = 0;
+                    uint8_t *ack_ptr = (uint8_t *)&ack;
+                    for (int j = 0; j < sizeof(AckPacket_t) - 1; j++) ack_sum += ack_ptr[j];
+                    ack.checksum = ack_sum;
+
+                    if (Wait_UART_Ready(&huart3, 5) == 0) {
+                        HAL_UART_Transmit_DMA(&huart3, (uint8_t*)&ack, sizeof(AckPacket_t));
+                    }
+                    break;
+                }
             }
+            // <--- 新增：截获目标点指令
+            else if (type == 0x07) {
+                GoalPacket_t *pkt = (GoalPacket_t *)&local_buf[i];
+                uint8_t sum = 0;
+                uint8_t *ptr = (uint8_t *)pkt;
 
-            if (sum == pkt->checksum) {
-                Motor_SetTargetVelocity(pkt->linear_vel, pkt->yaw_rate);
+                // 计算 checksum (跳过结构体最后一个字节的自身 checksum 字段)
+                for (int j = 0; j < sizeof(GoalPacket_t) - 1; j++) sum += ptr[j];
 
-                static AckPacket_t ack;
-                ack.header = 0x5A5A;
-                ack.type = 0x04;
-                ack.yaw_rate = pkt->yaw_rate;
-                ack.linear_vel = pkt->linear_vel;
-
-                uint8_t ack_sum = 0;
-                uint8_t *ack_ptr = (uint8_t *)&ack;
-                for (int j = 0; j < sizeof(AckPacket_t) - 1; j++) {
-                    ack_sum += ack_ptr[j];
+                if (sum == pkt->checksum) {
+                    // 调用算法大脑抛出的安全更新接口
+                    Set_New_Target_Goal(pkt->goal_x, pkt->goal_y);
+                    break;
                 }
-                ack.checksum = ack_sum;
-
-                if (Wait_UART_Ready(&huart3, 5) == 0) {
-                    HAL_UART_Transmit_DMA(&huart3, (uint8_t*)&ack, sizeof(AckPacket_t));
-                }
-                break;
             }
         }
     }

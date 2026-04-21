@@ -40,5 +40,15 @@ void Transform_Lidar_To_Cartesian(uint16_t *distances, Point *cloud);
  * @return uint8_t 1: 系统已就绪(已初始化或刚完成初始化)，0: 数据不达标，继续等待
  */
 uint8_t Try_Initialize_ICP(IcpFrame_t *frame);
+/**
+ * @brief 尝试初始化 ICP 参考帧
+ * @param frame 前端传入的雷达数据帧
+ * @return uint8_t 1: 系统已就绪(已初始化或刚完成初始化)，0: 数据不达标，继续等待
+ */
+uint8_t Try_Initialize_ICP(IcpFrame_t *frame);
+
+// <--- 新增：线程安全的动态目标点设置接口
+void Set_New_Target_Goal(float x, float y);
+
 
 #endif //NOETICMAZE_ALGORITHMBRAIN_H
