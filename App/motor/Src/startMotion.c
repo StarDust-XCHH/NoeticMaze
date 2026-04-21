@@ -173,6 +173,7 @@ static TrackingCommand Motion_Build_Tracking_Command(const RobotState_t* current
     Point2D lookahead_body_point;
     float abs_heading_error_deg;
     float desired_linear_m_s;
+    float direction = 1.0f; // 【修改点1】新增：行驶方向标志，默认正向
 
     if ((current_robot_state == NULL) || (s_motion_path_len == 0U)) {
         return cmd;
@@ -185,9 +186,20 @@ static TrackingCommand Motion_Build_Tracking_Command(const RobotState_t* current
     cmd.goal_dist_m = Motion_Distance_Between(&robot_point, &cmd.goal_point);
 
     lookahead_body_point = Motion_MapPoint_To_BodyFrame(current_robot_state, &cmd.lookahead_point);
-    cmd.heading_error_deg = Robot_RadToDeg(atan2f(lookahead_body_point.y, lookahead_body_point.x));
+
+    // 【修改点2】判断前瞻点在车前还是车后，动态调整跟踪姿态
+    if (lookahead_body_point.x < 0.0f) {
+        direction = -1.0f; // 目标在后方，准备倒车
+        // 倒车时，将车尾视为车头：计算目标点与车尾的夹角
+        cmd.heading_error_deg = Robot_RadToDeg(atan2f(-lookahead_body_point.y, -lookahead_body_point.x));
+    } else {
+        direction = 1.0f;  // 目标在前方，正常正走
+        cmd.heading_error_deg = Robot_RadToDeg(atan2f(lookahead_body_point.y, lookahead_body_point.x));
+    }
+
     abs_heading_error_deg = Motion_Abs(cmd.heading_error_deg);
 
+    // 计算角速度（无论是正走还是倒车，算出的有效偏差可以直接乘Kp）
     cmd.yaw_rate_cmd_deg_s = TRACK_HEADING_KP * cmd.heading_error_deg;
     cmd.yaw_rate_cmd_deg_s = Motion_Clamp(cmd.yaw_rate_cmd_deg_s,
                                           -TRACK_MAX_YAW_RATE_DEG_S,
@@ -203,6 +215,7 @@ static TrackingCommand Motion_Build_Tracking_Command(const RobotState_t* current
         return cmd;
     }
 
+    // 计算线速度标量（基于有效偏差和距离降速）
     desired_linear_m_s = TRACK_CRUISE_LINEAR_M_S;
     desired_linear_m_s *= Motion_Compute_Turn_Scale(abs_heading_error_deg);
     desired_linear_m_s *= Motion_Compute_Goal_Scale(cmd.goal_dist_m);
@@ -211,7 +224,13 @@ static TrackingCommand Motion_Build_Tracking_Command(const RobotState_t* current
         desired_linear_m_s = TRACK_MIN_LINEAR_M_S;
     }
 
-    cmd.linear_cmd_m_s = Motion_Clamp(desired_linear_m_s, 0.0f, TRACK_MAX_LINEAR_M_S);
+    // 【修改点3】赋予速度方向，并将限幅下界改为允许最大的倒车速度
+    desired_linear_m_s *= direction;
+    cmd.linear_cmd_m_s = Motion_Clamp(desired_linear_m_s,
+                                      -TRACK_MAX_LINEAR_M_S,
+                                      TRACK_MAX_LINEAR_M_S);
+
+    // 现有的线性加速度约束平滑函数（Motion_Apply_Linear_Slew）天然兼容正负值过渡，无需修改
     cmd.linear_cmd_m_s = Motion_Apply_Linear_Slew(cmd.linear_cmd_m_s);
     cmd.valid = true;
     return cmd;
