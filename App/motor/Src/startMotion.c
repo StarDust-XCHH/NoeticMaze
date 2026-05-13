@@ -15,6 +15,7 @@
 #include "robot_state.h"
 #include "arm_math.h"
 #include "planner_core.h"
+#include "debug_report.h"
 #include "roboConifg.h"
 #include <float.h>
 #include <string.h>
@@ -31,6 +32,9 @@ static Point2D s_trimmed_points[PATH_DISPLAY_MAX_POINTS];
 static uint16_t s_motion_path_len = 0U;
 static uint32_t s_motion_path_sequence = 0U;
 static uint32_t s_trimmed_tf_version = 0U;
+static uint32_t s_motion_stack_debug_tick = 0U;
+static uint32_t s_motion_trim_debug_tick = 0U;
+static uint32_t s_motion_projection_debug_tick = 0U;
 static int s_last_projection_index = 0;
 static float s_progress_s_m = 0.0f;
 static float s_track_last_linear_cmd_m_s = 0.0f;
@@ -249,6 +253,13 @@ static void Motion_Reset_Runtime_Path(void)
     s_track_last_linear_cmd_m_s = 0.0f;
     memset(s_motion_path_arc_len, 0, sizeof(s_motion_path_arc_len));
     Reset_Trimmed_Path_State();
+    Debug_Post(DBG_MOD_MOTION,
+               DBG_STAGE_MOTION_PATH_RESET,
+               0,
+               0.0f,
+               0.0f,
+               0.0f,
+               0.0f);
 }
 
 static void Motion_Load_New_Path(const GlobalPathSnapshot* path_snapshot)
@@ -280,6 +291,13 @@ static void Motion_Load_New_Path(const GlobalPathSnapshot* path_snapshot)
     s_last_projection_index = 0;
     s_progress_s_m = 0.0f;
     s_track_last_linear_cmd_m_s = 0.0f;
+    Debug_Post(DBG_MOD_MOTION,
+               DBG_STAGE_MOTION_PATH_LOADED,
+               0,
+               (float)safe_len,
+               (float)s_motion_path_sequence,
+               s_motion_path_arc_len[safe_len - 1U],
+               0.0f);
 }
 
 static PathProjectionResult Motion_Project_On_Segment(const Point2D* p0,
@@ -440,6 +458,19 @@ static void Motion_Publish_Trimmed_Path(const PathProjectionResult* projection, 
                               s_motion_path_sequence,
                               tf_version,
                               1U);
+    {
+        uint32_t now_tick = osKernelGetTickCount();
+        if ((now_tick - s_motion_trim_debug_tick) >= pdMS_TO_TICKS(500)) {
+            s_motion_trim_debug_tick = now_tick;
+            Debug_Post(DBG_MOD_MOTION,
+                       DBG_STAGE_MOTION_TRIMMED_PUBLISHED,
+                       0,
+                       (float)out_len,
+                       s_progress_s_m,
+                       (float)s_motion_path_sequence,
+                       (float)tf_version);
+        }
+    }
 }
 
 static void Motion_Update_Trimmed_Path_View(const RobotState_t* current_robot_state)
@@ -481,6 +512,17 @@ static void Motion_Update_Trimmed_Path_View(const RobotState_t* current_robot_st
     }
 
     if (projection.dist_sq_m > max_projection_dist_sq) {
+        uint32_t now_tick = osKernelGetTickCount();
+        if ((now_tick - s_motion_projection_debug_tick) >= pdMS_TO_TICKS(500)) {
+            s_motion_projection_debug_tick = now_tick;
+            Debug_Post(DBG_MOD_MOTION,
+                       DBG_STAGE_MOTION_PROJECTION_TOO_FAR,
+                       0,
+                       projection.dist_sq_m,
+                       max_projection_dist_sq,
+                       (float)projection.segment_index,
+                       s_progress_s_m);
+        }
         return;
     }
 
@@ -585,6 +627,20 @@ void StartMotionTask(void *argument)
         // ==========================================
         // 4. 严格绝对延时
         // ==========================================
+        {
+            uint32_t now_tick = osKernelGetTickCount();
+            if ((now_tick - s_motion_stack_debug_tick) >= pdMS_TO_TICKS(1000)) {
+                s_motion_stack_debug_tick = now_tick;
+                Debug_Post(DBG_MOD_MOTION,
+                           DBG_STAGE_MOTION_STACK_WATERMARK,
+                           0,
+                           (float)uxTaskGetStackHighWaterMark(NULL),
+                           (float)s_motion_path_len,
+                           s_progress_s_m,
+                           0.0f);
+            }
+        }
+
         // 任务会被挂起，直到下一个 10ms 周期到来
         vTaskDelayUntil(&xLastWakeTime, xFrequency);
     }

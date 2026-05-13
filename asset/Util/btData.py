@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import scrolledtext, messagebox
+from tkinter import scrolledtext, messagebox, ttk
 import serial
 import struct
 import threading
@@ -32,6 +32,28 @@ DBG_MODULE_NAMES = {
     3: "Motion",
     4: "UART",
     5: "Fault",
+}
+
+DBG_STAGE_NAMES = {
+    ("UART", 1): "heartbeat",
+    ("UART", 2): "dma_stuck_abort",
+    ("UART", 3): "drop_count",
+    ("Motion", 1): "path_loaded",
+    ("Motion", 2): "projection_too_far",
+    ("Motion", 3): "path_reset",
+    ("Motion", 4): "trimmed_published",
+    ("Motion", 5): "stack_watermark",
+    ("Planner", 1): "request_received",
+    ("Planner", 2): "astar_success",
+    ("Planner", 3): "astar_failed",
+    ("Planner", 4): "aborted",
+    ("Planner", 5): "path_published",
+    ("Planner", 6): "stack_watermark",
+    ("SLAM", 1): "imu_not_ready",
+    ("SLAM", 2): "icp_initialized",
+    ("SLAM", 3): "map_shared",
+    ("SLAM", 4): "replan_requested",
+    ("SLAM", 5): "stack_watermark",
 }
 
 # --- PID 收敛评估阈值 ---
@@ -84,6 +106,9 @@ class RobotGUI:
         self.stm32_path = []                # <--- 新增：存储下位机发来的A*路径
         self.debug_last = {name: {"tick": None, "stage": None, "code": None}
                            for name in DBG_MODULE_NAMES.values()}
+        self.debug_rx_count = 0
+        self.debug_checksum_fail_count = 0
+        self.debug_unknown_count = 0
 
         try:
             self.ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.01)
@@ -137,6 +162,31 @@ class RobotGUI:
             justify="left"
         )
         self.lbl_debug_summary.pack(fill="x")
+        self.lbl_debug_stats = tk.Label(
+            debug_frame,
+            text="Debug packets: rx=0 checksum_fail=0 unknown=0",
+            font=("Consolas", 9),
+            anchor="w"
+        )
+        self.lbl_debug_stats.pack(fill="x")
+
+        debug_columns = ("tick", "module", "stage", "code", "a", "b", "c", "d", "meaning")
+        self.debug_tree = ttk.Treeview(debug_frame, columns=debug_columns, show="headings", height=5)
+        column_widths = {
+            "tick": 80,
+            "module": 70,
+            "stage": 60,
+            "code": 55,
+            "a": 70,
+            "b": 70,
+            "c": 70,
+            "d": 70,
+            "meaning": 160,
+        }
+        for col in debug_columns:
+            self.debug_tree.heading(col, text=col)
+            self.debug_tree.column(col, width=column_widths[col], anchor="center", stretch=(col == "meaning"))
+        self.debug_tree.pack(fill="x", pady=(4, 0))
 
         # 2. 双屏布局区
         center_container = tk.Frame(self.root)
@@ -425,6 +475,8 @@ class RobotGUI:
                                 self.root.after(0, self.update_debug_ui, tick, module, stage, code, a, b, c, d)
                             except Exception as e:
                                 print(f"Debug Parse Error: {e}")
+                        else:
+                            self.root.after(0, self.update_debug_checksum_fail_ui)
 
                         buffer = buffer[DEBUG_PACKET_SIZE:]
                     # --------------------------------
@@ -535,6 +587,11 @@ class RobotGUI:
 
     def update_debug_ui(self, tick, module, stage, code, a, b, c, d):
         module_name = DBG_MODULE_NAMES.get(module, f"MOD{module}")
+        meaning = DBG_STAGE_NAMES.get((module_name, stage), f"unknown_stage_{stage}")
+        self.debug_rx_count += 1
+        if module_name.startswith("MOD") or meaning.startswith("unknown_stage"):
+            self.debug_unknown_count += 1
+
         self.debug_last[module_name] = {
             "tick": tick,
             "stage": stage,
@@ -550,13 +607,44 @@ class RobotGUI:
                 parts.append(f"{name}: st={item['stage']} tick={item['tick']} code={item['code']}")
 
         self.lbl_debug_summary.config(text=" | ".join(parts))
+        self.lbl_debug_stats.config(
+            text=f"Debug packets: rx={self.debug_rx_count} "
+                 f"checksum_fail={self.debug_checksum_fail_count} "
+                 f"unknown={self.debug_unknown_count}"
+        )
+
+        self.debug_tree.insert(
+            "",
+            0,
+            values=(
+                tick,
+                module_name,
+                stage,
+                code,
+                f"{a:.3f}",
+                f"{b:.3f}",
+                f"{c:.3f}",
+                f"{d:.3f}",
+                meaning,
+            )
+        )
+        while len(self.debug_tree.get_children()) > 80:
+            self.debug_tree.delete(self.debug_tree.get_children()[-1])
 
         log_msg = (
-            f"[{tick}] {module_name}.{stage} code={code} "
+            f"[{tick}] {module_name}.{stage} ({meaning}) code={code} "
             f"a={a:.3f} b={b:.3f} c={c:.3f} d={d:.3f}"
         )
         color = "red" if module_name == "Fault" or code < 0 else "gray"
         self.write_log(log_msg, color)
+
+    def update_debug_checksum_fail_ui(self):
+        self.debug_checksum_fail_count += 1
+        self.lbl_debug_stats.config(
+            text=f"Debug packets: rx={self.debug_rx_count} "
+                 f"checksum_fail={self.debug_checksum_fail_count} "
+                 f"unknown={self.debug_unknown_count}"
+        )
 
     # --- 网络与控制 ---
     def nav_client_task(self):

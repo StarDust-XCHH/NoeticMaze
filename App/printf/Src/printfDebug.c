@@ -18,6 +18,7 @@
 #include "map_core.h"
 #include "motor_pid.h"
 #include "planner_core.h"
+#include "debug_report.h"
 #include "roboConifg.h"
 #include "algorithmBrain.h" // <--- 新增：为了调用 Set_New_Target_Goal()
 
@@ -26,8 +27,6 @@
 #define BT_STATE_MAX_GAP_MS     40U
 #define BT_PRINT_LOOP_MS        5U
 #define BT_DEBUG_HEARTBEAT_MS   1000U
-#define DBG_STAGE_UART_HEARTBEAT 1U
-#define DBG_STAGE_UART_DMA_STUCK 2U
 
 
 // 引入外部句柄
@@ -97,6 +96,13 @@ static bool BtUart_IsReady(UART_HandleTypeDef *huart)
     } else if ((now - s_bt_uart_busy_since) >= pdMS_TO_TICKS(BT_UART_STUCK_TIMEOUT_MS)) {
         HAL_UART_AbortTransmit(huart);
         s_bt_uart_abort_count++;
+        Debug_Post(DBG_MOD_UART,
+                   DBG_STAGE_UART_DMA_STUCK,
+                   0,
+                   (float)s_bt_uart_abort_count,
+                   (float)(now - s_bt_uart_busy_since),
+                   (float)huart->gState,
+                   0.0f);
         s_bt_uart_busy_since = 0U;
     }
 
@@ -120,32 +126,41 @@ static bool BtUart_TryTransmit(UART_HandleTypeDef *huart, uint8_t *data, uint16_
     return false;
 }
 
-static bool Send_Debug_Packet_DMA(uint8_t module,
-                                  uint8_t stage,
-                                  int16_t code,
-                                  float a,
-                                  float b,
-                                  float c,
-                                  float d)
+static bool Send_Debug_Event_DMA(const DebugEvent_t *event)
 {
-    if (!BtUart_IsReady(&huart3)) {
+    if ((event == NULL) || (!BtUart_IsReady(&huart3))) {
         return false;
     }
 
     debug_pkg.header = 0x55AA;
     debug_pkg.type = TYPE_DEBUG;
-    debug_pkg.tick = osKernelGetTickCount();
-    debug_pkg.module = module;
-    debug_pkg.stage = stage;
-    debug_pkg.code = code;
-    debug_pkg.a = a;
-    debug_pkg.b = b;
-    debug_pkg.c = c;
-    debug_pkg.d = d;
+    debug_pkg.tick = event->tick;
+    debug_pkg.module = event->module;
+    debug_pkg.stage = event->stage;
+    debug_pkg.code = event->code;
+    debug_pkg.a = event->a;
+    debug_pkg.b = event->b;
+    debug_pkg.c = event->c;
+    debug_pkg.d = event->d;
     debug_pkg.checksum = Calc_Checksum(((uint8_t*)&debug_pkg) + 3,
                                        (uint16_t)(sizeof(Debug_Packet_t) - 4U));
 
     return BtUart_TryTransmit(&huart3, (uint8_t*)&debug_pkg, sizeof(Debug_Packet_t));
+}
+
+static bool Send_Debug_Queued_Event_DMA(void)
+{
+    DebugEvent_t event;
+
+    if (!BtUart_IsReady(&huart3)) {
+        return false;
+    }
+
+    if (!Debug_TryPop(&event)) {
+        return false;
+    }
+
+    return Send_Debug_Event_DMA(&event);
 }
 
 static bool Send_Debug_Heartbeat_DMA(void)
@@ -161,17 +176,14 @@ static bool Send_Debug_Heartbeat_DMA(void)
         return false;
     }
 
-    if (Send_Debug_Packet_DMA(DBG_MOD_UART,
-                              DBG_STAGE_UART_HEARTBEAT,
-                              0,
-                              (float)g_MapIcp_Ready,
-                              (float)last_sent_path_seq,
-                              (float)s_bt_uart_abort_count,
-                              0.0f)) {
-        s_next_debug_tick = now + pdMS_TO_TICKS(BT_DEBUG_HEARTBEAT_MS);
-        return true;
-    }
-
+    Debug_Post(DBG_MOD_UART,
+               DBG_STAGE_UART_HEARTBEAT,
+               0,
+               (float)g_MapIcp_Ready,
+               (float)last_sent_path_seq,
+               (float)s_bt_uart_abort_count,
+               (float)Debug_GetDropCount());
+    s_next_debug_tick = now + pdMS_TO_TICKS(BT_DEBUG_HEARTBEAT_MS);
     return false;
 }
 
@@ -460,7 +472,8 @@ void StartTaskPrint(void *argument) {
         }
 
         if (!tx_started) {
-            tx_started = Send_Debug_Heartbeat_DMA();
+            (void)Send_Debug_Heartbeat_DMA();
+            tx_started = Send_Debug_Queued_Event_DMA();
         }
 
         if (!tx_started && state_due) {

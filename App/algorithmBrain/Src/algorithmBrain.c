@@ -15,6 +15,7 @@
 #include "arm_math.h" // 引入 CMSIS-DSP 库加速三角函数
 #include "map_core.h"
 #include "planner_core.h"
+#include "debug_report.h"
 #include "Cstar_map_core.h"
 #include "path_smoother.h"
 #include "planner_config.h"
@@ -50,6 +51,9 @@ static float s_last_goal_y = 0.0f;
 static bool s_goal_initialized = false;
 static uint32_t s_planner_map_version = 0;
 static uint32_t s_last_replan_tick = 0;
+static uint32_t s_slam_stack_debug_tick = 0;
+static uint32_t s_slam_map_debug_tick = 0;
+static uint32_t s_slam_imu_debug_tick = 0;
 static uint8_t s_blocked_streak = 0;
 static uint8_t s_blocked_map_storage[MAX_MAP_BYTES];
 static ServerMap s_blocked_map = {s_blocked_map_storage, PLANNER_MAP_RES, MAX_GRID_SIZE};
@@ -166,6 +170,17 @@ void StartAlgorithmBrain(void *argument)
             // 【新增】：IMU 状态拦截
             // ==========================================
             if (current_robot_state.imu_ready == 0) {
+                uint32_t now_tick = osKernelGetTickCount();
+                if ((now_tick - s_slam_imu_debug_tick) >= pdMS_TO_TICKS(1000)) {
+                    s_slam_imu_debug_tick = now_tick;
+                    Debug_Post(DBG_MOD_SLAM,
+                               DBG_STAGE_SLAM_IMU_NOT_READY,
+                               0,
+                               (float)received_map->sweep_count,
+                               0.0f,
+                               0.0f,
+                               0.0f);
+                }
                 // 如果 IMU 未校准完毕，则丢弃当前帧雷达数据，归还内存块给空闲队列
                 osMessageQueuePut(LidarFreeQueueHandle, &received_map, 0, 0);
                 received_map = NULL;
@@ -270,6 +285,13 @@ void StartAlgorithmBrain(void *argument)
                 Update_Robot_TF_MapOdom(0.0f, 0.0f, 0.0f);
 
                 icp_internal_init = 1;
+                Debug_Post(DBG_MOD_SLAM,
+                           DBG_STAGE_SLAM_ICP_INITIALIZED,
+                           0,
+                           result.x,
+                           result.y,
+                           result.theta,
+                           (float)received_map->sweep_count);
             }
             else
             {
@@ -420,6 +442,19 @@ void StartAlgorithmBrain(void *argument)
                 // 5. 设置就绪标志位并释放锁
                 g_MapIcp_Ready = 1;
                 osMutexRelease(MapDataMutexHandle);
+                {
+                    uint32_t now_tick = osKernelGetTickCount();
+                    if ((now_tick - s_slam_map_debug_tick) >= pdMS_TO_TICKS(500)) {
+                        s_slam_map_debug_tick = now_tick;
+                        Debug_Post(DBG_MOD_SLAM,
+                                   DBG_STAGE_SLAM_MAP_SHARED,
+                                   0,
+                                   (float)diff_cnt,
+                                   result.x,
+                                   result.y,
+                                   result.theta);
+                    }
+                }
             }
 
 
@@ -506,11 +541,32 @@ void StartAlgorithmBrain(void *argument)
                 s_last_goal_y = goal_y;
                 s_goal_initialized = true;
                 s_last_replan_tick = now_tick;
+                Debug_Post(DBG_MOD_SLAM,
+                           DBG_STAGE_SLAM_REPLAN_REQUESTED,
+                           (int16_t)replan_reason,
+                           result.x,
+                           result.y,
+                           goal_x,
+                           goal_y);
                 if (replan_reason != PLANNER_REPLAN_REASON_PATH_BLOCKED) {
                     s_blocked_streak = 0;
                 }
             }
 #endif
+
+            {
+                uint32_t stack_tick = osKernelGetTickCount();
+                if ((stack_tick - s_slam_stack_debug_tick) >= pdMS_TO_TICKS(1000)) {
+                    s_slam_stack_debug_tick = stack_tick;
+                    Debug_Post(DBG_MOD_SLAM,
+                               DBG_STAGE_SLAM_STACK_WATERMARK,
+                               0,
+                               (float)uxTaskGetStackHighWaterMark(NULL),
+                               (float)diff_cnt,
+                               (float)s_planner_map_version,
+                               (float)icp_frame_counter);
+                }
+            }
 
             // 步骤 E: 归还内存块给 Lidar 空闲队列
             osMessageQueuePut(LidarFreeQueueHandle, &received_map, 0, 0);

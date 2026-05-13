@@ -17,6 +17,7 @@
 #include "path_smoother.h"
 #include "planner_algo.h"
 #include "planner_config.h"
+#include "debug_report.h"
 #include "cmsis_os.h"
 
 // 仅保留读取 DWT 计数值的宏，取消初始化相关的宏
@@ -44,6 +45,7 @@ static Point2D s_path_buffer_A[MAX_PATH_LEN]; // 内部扭转管道
 // 3. 【A* -> 运动控制】的乒乓双缓冲输出
 static Point2D s_path_buffer_C[2][MAX_PATH_LEN];
 static uint8_t out_ping_pong_idx = 0;
+static uint32_t s_planner_stack_debug_tick = 0U;
 
 // 4. 【SLAM -> A*】的地图乒乓双缓冲实体与指针
 static uint8_t s_map_ping[MAX_MAP_BYTES];
@@ -68,6 +70,14 @@ void StartPlannerTask(void *argument) {
         while (osMessageQueueGetCount(ReqQueueHandle) > 0) {
             osMessageQueueGet(ReqQueueHandle, &req, NULL, 0);
         }
+
+        Debug_Post(DBG_MOD_PLANNER,
+                   DBG_STAGE_PLANNER_REQUEST_RECEIVED,
+                   (int16_t)req.reason,
+                   req.start_x,
+                   req.start_y,
+                   req.target_x,
+                   req.target_y);
 
         // 3. 清除打断标志，准备开始新的轮回
         g_abort_astar = false;
@@ -108,6 +118,14 @@ void StartPlannerTask(void *argument) {
                                           last_raw_path_len, req.is_return, s_path_buffer_A);
 
             if (raw_path_len > 0) {
+                Debug_Post(DBG_MOD_PLANNER,
+                           DBG_STAGE_PLANNER_ASTAR_SUCCESS,
+                           0,
+                           (float)raw_path_len,
+                           req.start_x,
+                           req.start_y,
+                           req.target_x);
+
                 // 备份当前成功生成的初步路径，供下次做亲和力参考
                 memcpy(s_prev_path, s_path_buffer_A, raw_path_len * sizeof(Point2D));
                 last_raw_path_len = raw_path_len;
@@ -119,6 +137,13 @@ void StartPlannerTask(void *argument) {
                 final_path_len = generate_safe_corner_path(&g_map, s_path_buffer_A, smoothed_len, 0.5f, 0.05f, req.is_return, current_out_buf);
             } else {
                 // 规划失败或被 SLAM 强行打断 (Early Abort)
+                Debug_Post(DBG_MOD_PLANNER,
+                           g_abort_astar ? DBG_STAGE_PLANNER_ABORTED : DBG_STAGE_PLANNER_ASTAR_FAILED,
+                           g_abort_astar ? 1 : 0,
+                           req.start_x,
+                           req.start_y,
+                           req.target_x,
+                           req.target_y);
                 last_raw_path_len = 0;
             }
         }
@@ -144,6 +169,28 @@ void StartPlannerTask(void *argument) {
 
             // 翻转输出缓冲片，下次循环使用另一片，保护正被其他线程读取的数据
             out_ping_pong_idx ^= 1;
+
+            Debug_Post(DBG_MOD_PLANNER,
+                       DBG_STAGE_PLANNER_PATH_PUBLISHED,
+                       0,
+                       (float)final_path_len,
+                       elapsed_ms,
+                       (float)g_current_safe_path.sequence,
+                       0.0f);
+        }
+
+        {
+            uint32_t now_tick = osKernelGetTickCount();
+            if ((now_tick - s_planner_stack_debug_tick) >= pdMS_TO_TICKS(1000)) {
+                s_planner_stack_debug_tick = now_tick;
+                Debug_Post(DBG_MOD_PLANNER,
+                           DBG_STAGE_PLANNER_STACK_WATERMARK,
+                           0,
+                           (float)uxTaskGetStackHighWaterMark(NULL),
+                           (float)final_path_len,
+                           elapsed_ms,
+                           0.0f);
+            }
         }
     }
 }
