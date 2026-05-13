@@ -20,11 +20,14 @@
 #include <string.h>
 #include <stdbool.h>
 
+#define PATH_DISPLAY_MAX_POINTS 80U
+
 // 假设 IMU 校准标志位为全局变量（可以通过信号量或事件标志组优化，此处先保持简单）
 extern uint8_t g_imu_is_calibrated;
 
 static Point2D s_motion_path_buffer[MAX_PATH_LEN];
 static float s_motion_path_arc_len[MAX_PATH_LEN];
+static Point2D s_trimmed_points[PATH_DISPLAY_MAX_POINTS];
 static uint16_t s_motion_path_len = 0U;
 static uint32_t s_motion_path_sequence = 0U;
 static uint32_t s_trimmed_tf_version = 0U;
@@ -390,46 +393,48 @@ static PathProjectionResult Motion_Find_Local_Projection(float robot_x, float ro
 
 static void Motion_Publish_Trimmed_Path(const PathProjectionResult* projection, uint32_t tf_version)
 {
-    Point2D trimmed_points[MAX_PATH_LEN];
     uint16_t out_len = 0U;
-    float trim_keep_s;
-    int start_index;
+    uint16_t next_index;
+    uint16_t remaining_points;
+    uint16_t available_slots;
 
     if ((projection == NULL) || (!projection->valid) || (s_motion_path_len == 0U)) {
         Reset_Trimmed_Path_State();
         return;
     }
 
-    trim_keep_s = projection->progress_s_m - PATH_TRIM_BACK_MARGIN_M;
-    if (trim_keep_s < 0.0f) {
-        trim_keep_s = 0.0f;
-    }
+    s_trimmed_points[out_len++] = projection->point;
 
-    start_index = projection->segment_index;
-    while ((start_index > 0) && (s_motion_path_arc_len[start_index] > trim_keep_s)) {
-        --start_index;
-    }
+    next_index = (projection->segment_index < 0) ? 0U : (uint16_t)(projection->segment_index + 1);
+    if (next_index < s_motion_path_len) {
+        remaining_points = (uint16_t)(s_motion_path_len - next_index);
+        available_slots = (uint16_t)(PATH_DISPLAY_MAX_POINTS - out_len);
 
-    trimmed_points[out_len++] = projection->point;
+        if (remaining_points <= available_slots) {
+            for (uint16_t i = next_index; i < s_motion_path_len; ++i) {
+                s_trimmed_points[out_len++] = s_motion_path_buffer[i];
+            }
+        } else if (available_slots == 1U) {
+            s_trimmed_points[out_len++] = s_motion_path_buffer[s_motion_path_len - 1U];
+        } else if (available_slots > 1U) {
+            for (uint16_t slot = 0U; slot < available_slots; ++slot) {
+                uint32_t offset;
+                uint16_t sample_index;
 
-    for (uint16_t i = (uint16_t)(projection->segment_index + 1); i < s_motion_path_len && out_len < MAX_PATH_LEN; ++i) {
-        trimmed_points[out_len++] = s_motion_path_buffer[i];
-    }
+                if ((slot + 1U) == available_slots) {
+                    sample_index = (uint16_t)(s_motion_path_len - 1U);
+                } else {
+                    offset = ((uint32_t)slot * (uint32_t)(remaining_points - 1U)) /
+                             (uint32_t)(available_slots - 1U);
+                    sample_index = (uint16_t)(next_index + offset);
+                }
 
-    if ((out_len == 1U) && (projection->segment_index < ((int)s_motion_path_len - 1))) {
-        trimmed_points[out_len++] = s_motion_path_buffer[projection->segment_index + 1];
-    }
-
-    if (start_index < projection->segment_index) {
-        for (int i = projection->segment_index - 1; i >= start_index && out_len < MAX_PATH_LEN; --i) {
-            // 保留少量历史余量会导致这里的离散点位于投影点前方；
-            // 当前实现只重建投影首点并拼接未来路径，以避免上位机显示回头折返。
-            (void)i;
-            break;
+                s_trimmed_points[out_len++] = s_motion_path_buffer[sample_index];
+            }
         }
     }
 
-    Update_Trimmed_Path_State(trimmed_points,
+    Update_Trimmed_Path_State(s_trimmed_points,
                               out_len,
                               s_progress_s_m,
                               s_motion_path_sequence,
@@ -439,15 +444,17 @@ static void Motion_Publish_Trimmed_Path(const PathProjectionResult* projection, 
 
 static void Motion_Update_Trimmed_Path_View(const RobotState_t* current_robot_state)
 {
-    GlobalPathSnapshot path_snapshot;
+    GlobalPathSnapshot path_snapshot = {0};
     PathProjectionResult projection;
     float max_projection_dist_sq = PATH_PROJECTION_MAX_DIST_M * PATH_PROJECTION_MAX_DIST_M;
+    bool has_path_snapshot;
 
     if (current_robot_state == NULL) {
         return;
     }
 
-    if (Get_Global_Path_Snapshot(&path_snapshot)) {
+    has_path_snapshot = Get_Global_Path_Snapshot(&path_snapshot);
+    if (has_path_snapshot) {
         if (path_snapshot.sequence != s_motion_path_sequence) {
             Motion_Load_New_Path(&path_snapshot);
         }
@@ -462,6 +469,7 @@ static void Motion_Update_Trimmed_Path_View(const RobotState_t* current_robot_st
     }
 
     if ((current_robot_state->tf_map_odom_version == s_trimmed_tf_version) &&
+        has_path_snapshot &&
         (path_snapshot.sequence == s_motion_path_sequence)) {
         return;
     }

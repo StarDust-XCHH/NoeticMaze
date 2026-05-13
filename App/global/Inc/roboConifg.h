@@ -55,7 +55,7 @@
 #define TRACK_CRUISE_LINEAR_M_S          0.45f   // 默认巡航线速度
 #define TRACK_MAX_LINEAR_M_S             0.80f   // 上层最终输出线速度限制
 #define TRACK_MAX_YAW_RATE_DEG_S         60.0f   // 上层最终输出角速度限制
-#define TRACK_TURN_SLOWDOWN_START_DEG    15.0f   // 超过该航向误差开始降线速
+#define TRACK_TURN_SLOWDOWN_START_DEG    30.0f   // 超过该航向误差开始降线速
 #define TRACK_TURN_SLOWDOWN_STOP_DEG     60.0f   // 超过该航向误差线速度归零
 #define TRACK_GOAL_SLOWDOWN_DIST_M       0.25f   // 接近终点开始降速
 #define TRACK_GOAL_STOP_DIST_M           0.05f   // 终点停车距离
@@ -89,8 +89,8 @@
 // 【新增】轮距 (两个驱动轮中心之间的距离)
 #define WHEEL_TRACK        0.18f    // 18cm = 0.18米
 // 【新增】定义里程计的起始位置 (单位：米)
-#define INITIAL_ODOM_X     2.5f     // 例如：起始 X 设为 1.5 米
-#define INITIAL_ODOM_Y     2.5f     // 例如：起始 Y 设为 2.0 米
+#define INITIAL_ODOM_X     0.5f     // 例如：起始 X 设为 1.5 米
+#define INITIAL_ODOM_Y     0.5f     // 例如：起始 Y 设为 2.0 米
 // 速度限制 (安全第一)
 #define MAX_LINEAR_VEL     0.8f                 // 最大线速度限制 0.8m/s
 #define MAX_ANGULAR_DELTA  0.15f                // 转向引起的差速补偿最大值 0.15m/s
