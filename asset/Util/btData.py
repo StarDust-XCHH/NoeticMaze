@@ -23,6 +23,16 @@ TYPE_MAP_ICP = 0x05
 TYPE_LIDAR_RAW = 0x02
 TYPE_PATH_ASTAR = 0x06   # <--- 新增：下位机A*路径包类型
 TYPE_GOAL_CMD = 0x07     # <--- 新增：目标点下发包类型
+TYPE_DEBUG = 0x08
+DEBUG_PACKET_SIZE = 28
+
+DBG_MODULE_NAMES = {
+    1: "SLAM",
+    2: "Planner",
+    3: "Motion",
+    4: "UART",
+    5: "Fault",
+}
 
 # --- PID 收敛评估阈值 ---
 CONVERGENCE_THRESHOLD = 2.0
@@ -72,6 +82,8 @@ class RobotGUI:
         self.nav_path = []                  # 后端传回的规划路径
         self.cost_mask = None               # 后端传回的膨胀地图
         self.stm32_path = []                # <--- 新增：存储下位机发来的A*路径
+        self.debug_last = {name: {"tick": None, "stage": None, "code": None}
+                           for name in DBG_MODULE_NAMES.values()}
 
         try:
             self.ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.01)
@@ -113,6 +125,18 @@ class RobotGUI:
         self.lbl_vel.grid(row=1, column=2, padx=10)
         self.lbl_convergence = tk.Label(status_frame, text="收敛状况: 等待数据", font=("Arial", 10))
         self.lbl_convergence.grid(row=1, column=1, padx=10, sticky="w")
+
+        # 调试包状态区
+        debug_frame = tk.LabelFrame(self.root, text=" 调试包状态 ", padx=10, pady=5)
+        debug_frame.pack(fill="x", padx=10, pady=5)
+        self.lbl_debug_summary = tk.Label(
+            debug_frame,
+            text="SLAM: - | Planner: - | Motion: - | UART: - | Fault: -",
+            font=("Consolas", 10),
+            anchor="w",
+            justify="left"
+        )
+        self.lbl_debug_summary.pack(fill="x")
 
         # 2. 双屏布局区
         center_container = tk.Frame(self.root)
@@ -390,6 +414,19 @@ class RobotGUI:
                                 print(f"A* Path Parse Error: {e}")
 
                         buffer = buffer[total:]
+                    # 调试包
+                    elif pkg_type == TYPE_DEBUG and buffer.startswith(b'\xAA\x55'):
+                        if len(buffer) < DEBUG_PACKET_SIZE: break
+
+                        # 固定结构: header2 + type1 + payload24 + checksum1
+                        if (sum(buffer[3:27]) & 0xFF) == buffer[27]:
+                            try:
+                                tick, module, stage, code, a, b, c, d = struct.unpack('<IBBhffff', buffer[3:27])
+                                self.root.after(0, self.update_debug_ui, tick, module, stage, code, a, b, c, d)
+                            except Exception as e:
+                                print(f"Debug Parse Error: {e}")
+
+                        buffer = buffer[DEBUG_PACKET_SIZE:]
                     # --------------------------------
                     else: buffer = buffer[2:]
             time.sleep(0.001)
@@ -495,6 +532,31 @@ class RobotGUI:
 
         self.cached_color_map = cv2.flip(color_map, 0)
         self.render_map()
+
+    def update_debug_ui(self, tick, module, stage, code, a, b, c, d):
+        module_name = DBG_MODULE_NAMES.get(module, f"MOD{module}")
+        self.debug_last[module_name] = {
+            "tick": tick,
+            "stage": stage,
+            "code": code,
+        }
+
+        parts = []
+        for name in DBG_MODULE_NAMES.values():
+            item = self.debug_last.get(name, {})
+            if item.get("tick") is None:
+                parts.append(f"{name}: -")
+            else:
+                parts.append(f"{name}: st={item['stage']} tick={item['tick']} code={item['code']}")
+
+        self.lbl_debug_summary.config(text=" | ".join(parts))
+
+        log_msg = (
+            f"[{tick}] {module_name}.{stage} code={code} "
+            f"a={a:.3f} b={b:.3f} c={c:.3f} d={d:.3f}"
+        )
+        color = "red" if module_name == "Fault" or code < 0 else "gray"
+        self.write_log(log_msg, color)
 
     # --- 网络与控制 ---
     def nav_client_task(self):

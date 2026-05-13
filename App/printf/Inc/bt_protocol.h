@@ -10,6 +10,7 @@
 
 // ✅ 将宏定义移动到这里：这是协议级的数据载荷限制
 #define MAX_MAP_DIFF 512
+#define TYPE_DEBUG 0x08
 
 
 // 强制 1 字节对齐，防止内存填充
@@ -99,6 +100,28 @@ typedef struct {
     // 注意：checksum 将被动态放置在有效载荷的最后一个字节
     uint8_t  checksum;
 } PathData_Packet_t;
+
+typedef enum {
+    DBG_MOD_SLAM    = 1,
+    DBG_MOD_PLANNER = 2,
+    DBG_MOD_MOTION  = 3,
+    DBG_MOD_UART    = 4,
+    DBG_MOD_FAULT   = 5,
+} DebugModule_t;
+
+typedef struct {
+    uint16_t header;     // 0x55AA
+    uint8_t  type;       // 0x08
+    uint32_t tick;       // osKernelGetTickCount()
+    uint8_t  module;     // DebugModule_t
+    uint8_t  stage;      // 当前执行阶段
+    int16_t  code;       // 错误码、失败原因或状态码
+    float    a;          // 通用参数1
+    float    b;          // 通用参数2
+    float    c;          // 通用参数3
+    float    d;          // 通用参数4
+    uint8_t  checksum;   // payload checksum: tick..d
+} Debug_Packet_t;
 
 #pragma pack(pop)
 #endif //NOETICMAZE_BT_PROTOCOL_H
