@@ -23,6 +23,10 @@
 
 #define IS_ICP2ASTAR 1
 
+// 自动返航：到达用户目标点后，自动规划回 INITIAL_ODOM_X/Y
+// 0: 关闭  1: 开启
+#define ENABLE_AUTO_RETURN_HOME 0
+
 #define jumpOutIcp 0 // 是否跳过icp算法
 #define MIN_VALID_POINTS_FOR_INIT 280 // 需至少有 280 个有效点才认为icp初始化完成
 // --- 空间关键帧更新阈值 (KeyFrame Update) ---
@@ -52,17 +56,18 @@
 #define TRACK_ENABLE_AUTONOMOUS_FOLLOW   1
 #define TRACK_LOOKAHEAD_DIST_M           0.18f   // 预瞄距离
 #define TRACK_HEADING_KP                 0.90f   // 航向误差P控制输出到角速度(deg/s per deg)
-#define TRACK_CRUISE_LINEAR_M_S          0.45f   // 默认巡航线速度
-#define TRACK_MAX_LINEAR_M_S             0.80f   // 上层最终输出线速度限制
+#define TRACK_CRUISE_LINEAR_M_S          0.65f   // 默认巡航线速度
+#define TRACK_MAX_LINEAR_M_S             1.0f   // 上层最终输出线速度限制
 #define TRACK_MAX_YAW_RATE_DEG_S         60.0f   // 上层最终输出角速度限制
-#define TRACK_TURN_SLOWDOWN_START_DEG    30.0f   // 超过该航向误差开始降线速
+#define TRACK_TURN_SLOWDOWN_START_DEG    10.0f   // 超过该航向误差开始降线速
 #define TRACK_TURN_SLOWDOWN_STOP_DEG     60.0f   // 超过该航向误差线速度归零
 #define TRACK_GOAL_SLOWDOWN_DIST_M       0.25f   // 接近终点开始降速
 #define TRACK_GOAL_STOP_DIST_M           0.05f   // 终点停车距离
+#define AUTO_RETURN_HOME_TRIGGER_DIST_M  TRACK_GOAL_STOP_DIST_M
 #define TRACK_HEADING_STOP_DEG           8.0f    // 终点附近允许停止的航向误差
 #define TRACK_MIN_LINEAR_M_S             0.08f   // 非停车状态下的最小前进线速度
 #define TRACK_ENABLE_LINEAR_SLEW         1
-#define TRACK_LINEAR_ACCEL_LIMIT_M_S2    1.20f   // 线速度斜坡限速
+#define TRACK_LINEAR_ACCEL_LIMIT_M_S2    1.60f   // 线速度斜坡限速
 
 
 // imu相关
@@ -88,9 +93,9 @@
 #define WHEEL_CIRCUM       (WHEEL_DIAMETER * 3.1415926f) // 轮子周长
 // 【新增】轮距 (两个驱动轮中心之间的距离)
 #define WHEEL_TRACK        0.18f    // 18cm = 0.18米
-// 【新增】定义里程计的起始位置 (单位：米)
-#define INITIAL_ODOM_X     0.5f     // 例如：起始 X 设为 1.5 米
-#define INITIAL_ODOM_Y     0.5f     // 例如：起始 Y 设为 2.0 米
+// 【新增】定义里程计的起始位置 (单位：米)——>右下角原点的右手系
+#define INITIAL_ODOM_X     1.05f     // 例如：起始 X 设为 1.5 米
+#define INITIAL_ODOM_Y     3.15f     // 例如：起始 Y 设为 2.0 米
 // 速度限制 (安全第一)
 #define MAX_LINEAR_VEL     0.8f                 // 最大线速度限制 0.8m/s
 #define MAX_ANGULAR_DELTA  0.15f                // 转向引起的差速补偿最大值 0.15m/s

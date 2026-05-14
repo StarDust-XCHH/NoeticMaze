@@ -29,6 +29,14 @@
 #define PI 3.14159265358979f
 #endif
 
+#ifndef ENABLE_AUTO_RETURN_HOME
+#define ENABLE_AUTO_RETURN_HOME 0
+#endif
+
+#ifndef AUTO_RETURN_HOME_TRIGGER_DIST_M
+#define AUTO_RETURN_HOME_TRIGGER_DIST_M TRACK_GOAL_STOP_DIST_M
+#endif
+
 // 1. 引入雷达数据队列句柄
 extern osMessageQueueId_t LidarQueueHandle;
 extern osMessageQueueId_t LidarFreeQueueHandle;
@@ -58,16 +66,38 @@ static uint8_t s_blocked_streak = 0;
 static uint8_t s_blocked_map_storage[MAX_MAP_BYTES];
 static ServerMap s_blocked_map = {s_blocked_map_storage, PLANNER_MAP_RES, MAX_GRID_SIZE};
 
+#if ENABLE_AUTO_RETURN_HOME
+typedef enum {
+    AUTO_RETURN_TO_USER_GOAL = 0,
+    AUTO_RETURN_TO_HOME,
+    AUTO_RETURN_HOME_REACHED
+} AutoReturnMode;
+
+static AutoReturnMode s_auto_return_mode = AUTO_RETURN_TO_USER_GOAL;
+#endif
+
 
 // <--- 新增：记录用户下发的最新目标点 (赋初值避免刚开机无目标)
 static float g_user_goal_x = INITIAL_ODOM_X + 0.7f;
 static float g_user_goal_y = INITIAL_ODOM_Y;
+static uint32_t s_user_goal_generation = 0U;
+static uint32_t s_seen_user_goal_generation = 0U;
+
+static void planner_force_next_goal_request(void) {
+    s_goal_initialized = false;
+    s_last_replan_tick = 0U;
+    s_blocked_streak = 0U;
+}
 
 // <--- 新增：供串口接收线程调用的安全写入接口
 void Set_New_Target_Goal(float x, float y) {
     taskENTER_CRITICAL(); // 挂起调度器，防止被算法线程抢占造成数据撕裂
     g_user_goal_x = x;
     g_user_goal_y = y;
+    s_user_goal_generation++;
+#if ENABLE_AUTO_RETURN_HOME
+    s_auto_return_mode = AUTO_RETURN_TO_USER_GOAL;
+#endif
     taskEXIT_CRITICAL();
 }
 
@@ -90,6 +120,25 @@ static inline void world_to_planner_cell(float x, float y, int* gx, int* gy) {
     *gx = (int)(x * inv_res);
     *gy = (int)(y * inv_res);
 }
+
+static void planner_clamp_goal(float* goal_x, float* goal_y) {
+    float extent_m = planner_map_extent_m();
+
+    if (*goal_x < 0.0f) *goal_x = 0.0f;
+    if (*goal_y < 0.0f) *goal_y = 0.0f;
+    if (*goal_x > extent_m) *goal_x = extent_m - PLANNER_MAP_RES;
+    if (*goal_y > extent_m) *goal_y = extent_m - PLANNER_MAP_RES;
+}
+
+#if ENABLE_AUTO_RETURN_HOME
+static bool planner_goal_reached_by_dist(float robot_x, float robot_y, float goal_x, float goal_y) {
+    float dx = robot_x - goal_x;
+    float dy = robot_y - goal_y;
+    float trigger_dist = AUTO_RETURN_HOME_TRIGGER_DIST_M;
+
+    return ((dx * dx) + (dy * dy)) <= (trigger_dist * trigger_dist);
+}
+#endif
 
 static bool planner_cell_is_blocked(ServerMap* map_view, int gx, int gy, bool is_return) {
     if (gx < 0 || gx >= map_view->grid_size || gy < 0 || gy >= map_view->grid_size) {
@@ -473,84 +522,148 @@ void StartAlgorithmBrain(void *argument)
             // ==========================================
             float goal_x;
             float goal_y;
+            uint32_t user_goal_generation;
+            bool active_goal_is_return = false;
+            bool planner_goal_active = true;
+#if ENABLE_AUTO_RETURN_HOME
+            AutoReturnMode auto_return_mode;
+#endif
             taskENTER_CRITICAL();
             goal_x = g_user_goal_x;
             goal_y = g_user_goal_y;
+            user_goal_generation = s_user_goal_generation;
+#if ENABLE_AUTO_RETURN_HOME
+            auto_return_mode = s_auto_return_mode;
+#endif
             taskEXIT_CRITICAL();
 
+            if (user_goal_generation != s_seen_user_goal_generation) {
+                s_seen_user_goal_generation = user_goal_generation;
+                planner_force_next_goal_request();
+            }
 
-            // TODO: 在这里接入最终目标
-            if (goal_x < 0.0f) goal_x = 0.0f;
-            if (goal_y < 0.0f) goal_y = 0.0f;
-            if (goal_x > planner_map_extent_m()) goal_x = planner_map_extent_m() - PLANNER_MAP_RES;
-            if (goal_y > planner_map_extent_m()) goal_y = planner_map_extent_m() - PLANNER_MAP_RES;
+            planner_clamp_goal(&goal_x, &goal_y);
 
-            PlannerReplanReason replan_reason = PLANNER_REPLAN_REASON_NONE;
-            GlobalPathSnapshot path_snapshot;
-            bool has_path_snapshot = Get_Global_Path_Snapshot(&path_snapshot);
-            int start_cell_x, start_cell_y, last_goal_cell_x, last_goal_cell_y, goal_cell_x, goal_cell_y;
-            world_to_planner_cell(result.x, result.y, &start_cell_x, &start_cell_y);
-            world_to_planner_cell(goal_x, goal_y, &goal_cell_x, &goal_cell_y);
-            world_to_planner_cell(s_last_goal_x, s_last_goal_y, &last_goal_cell_x, &last_goal_cell_y);
+#if ENABLE_AUTO_RETURN_HOME
+            if (auto_return_mode == AUTO_RETURN_TO_USER_GOAL &&
+                planner_goal_reached_by_dist(result.x, result.y, goal_x, goal_y)) {
+                bool switched_to_return = false;
 
-            if (!s_goal_initialized || abs(goal_cell_x - last_goal_cell_x) > PLANNER_REPLAN_GOAL_SHIFT_CELLS ||
-                abs(goal_cell_y - last_goal_cell_y) > PLANNER_REPLAN_GOAL_SHIFT_CELLS) {
-                replan_reason = PLANNER_REPLAN_REASON_GOAL_CHANGED;
-            } else if (!has_path_snapshot) {
-                replan_reason = PLANNER_REPLAN_REASON_NO_PATH;
-            } else {
-                int path_start_cell_x, path_start_cell_y;
-                world_to_planner_cell(path_snapshot.path_ptr[0].x, path_snapshot.path_ptr[0].y,
-                                      &path_start_cell_x, &path_start_cell_y);
+                taskENTER_CRITICAL();
+                if (s_auto_return_mode == AUTO_RETURN_TO_USER_GOAL &&
+                    s_user_goal_generation == user_goal_generation) {
+                    s_auto_return_mode = AUTO_RETURN_TO_HOME;
+                    switched_to_return = true;
+                }
+                auto_return_mode = s_auto_return_mode;
+                taskEXIT_CRITICAL();
 
-                if (abs(start_cell_x - path_start_cell_x) > PLANNER_REPLAN_DRIFT_CELLS ||
-                    abs(start_cell_y - path_start_cell_y) > PLANNER_REPLAN_DRIFT_CELLS) {
-                    replan_reason = PLANNER_REPLAN_REASON_START_DRIFT;
-                } else if (path_is_blocked(&s_blocked_map, false, &path_snapshot)) {
-                    if (s_blocked_streak < 255) {
-                        s_blocked_streak++;
-                    }
-                    if (s_blocked_streak >= PLANNER_REPLAN_BLOCKED_HITS) {
-                        replan_reason = PLANNER_REPLAN_REASON_PATH_BLOCKED;
-                    }
-                } else {
-                    s_blocked_streak = 0;
+                if (switched_to_return) {
+                    planner_force_next_goal_request();
                 }
             }
 
-            uint32_t now_tick = osKernelGetTickCount();
-            bool allow_replan = (now_tick - s_last_replan_tick) >= pdMS_TO_TICKS(PLANNER_REPLAN_MIN_INTERVAL_MS);
+            if (auto_return_mode == AUTO_RETURN_TO_HOME) {
+                goal_x = INITIAL_ODOM_X;
+                goal_y = INITIAL_ODOM_Y;
+                planner_clamp_goal(&goal_x, &goal_y);
+                active_goal_is_return = true;
 
-            if (replan_reason != PLANNER_REPLAN_REASON_NONE && allow_replan) {
-                if (replan_reason == PLANNER_REPLAN_REASON_PATH_BLOCKED) {
-                    g_abort_astar = true;
+                if (planner_goal_reached_by_dist(result.x, result.y, goal_x, goal_y)) {
+                    bool home_reached = false;
+
+                    taskENTER_CRITICAL();
+                    if (s_auto_return_mode == AUTO_RETURN_TO_HOME) {
+                        s_auto_return_mode = AUTO_RETURN_HOME_REACHED;
+                        home_reached = true;
+                    }
+                    auto_return_mode = s_auto_return_mode;
+                    taskEXIT_CRITICAL();
+
+                    if (home_reached) {
+                        planner_force_next_goal_request();
+                    }
+                    planner_goal_active = false;
+                    active_goal_is_return = false;
+                }
+            } else if (auto_return_mode == AUTO_RETURN_HOME_REACHED) {
+                goal_x = INITIAL_ODOM_X;
+                goal_y = INITIAL_ODOM_Y;
+                planner_clamp_goal(&goal_x, &goal_y);
+                planner_goal_active = false;
+            }
+#endif
+
+            if (planner_goal_active) {
+                PlannerReplanReason replan_reason = PLANNER_REPLAN_REASON_NONE;
+                GlobalPathSnapshot path_snapshot;
+                bool has_path_snapshot = Get_Global_Path_Snapshot(&path_snapshot);
+                int start_cell_x, start_cell_y, last_goal_cell_x, last_goal_cell_y, goal_cell_x, goal_cell_y;
+                world_to_planner_cell(result.x, result.y, &start_cell_x, &start_cell_y);
+                world_to_planner_cell(goal_x, goal_y, &goal_cell_x, &goal_cell_y);
+                world_to_planner_cell(s_last_goal_x, s_last_goal_y, &last_goal_cell_x, &last_goal_cell_y);
+
+                if (!s_goal_initialized || abs(goal_cell_x - last_goal_cell_x) > PLANNER_REPLAN_GOAL_SHIFT_CELLS ||
+                    abs(goal_cell_y - last_goal_cell_y) > PLANNER_REPLAN_GOAL_SHIFT_CELLS) {
+                    replan_reason = PLANNER_REPLAN_REASON_GOAL_CHANGED;
+                } else if (!has_path_snapshot) {
+                    replan_reason = PLANNER_REPLAN_REASON_NO_PATH;
+                } else {
+                    int path_start_cell_x, path_start_cell_y;
+                    world_to_planner_cell(path_snapshot.path_ptr[0].x, path_snapshot.path_ptr[0].y,
+                                          &path_start_cell_x, &path_start_cell_y);
+
+                    if (abs(start_cell_x - path_start_cell_x) > PLANNER_REPLAN_DRIFT_CELLS ||
+                        abs(start_cell_y - path_start_cell_y) > PLANNER_REPLAN_DRIFT_CELLS) {
+                        replan_reason = PLANNER_REPLAN_REASON_START_DRIFT;
+                    } else if (path_is_blocked(&s_blocked_map, active_goal_is_return, &path_snapshot)) {
+                        if (s_blocked_streak < 255) {
+                            s_blocked_streak++;
+                        }
+                        if (s_blocked_streak >= PLANNER_REPLAN_BLOCKED_HITS) {
+                            replan_reason = PLANNER_REPLAN_REASON_PATH_BLOCKED;
+                        }
+                    } else {
+                        s_blocked_streak = 0;
+                    }
                 }
 
-                send_planner_request(
-                    s_goal_initialized ? PLANNER_REQ_REPLAN : PLANNER_REQ_NEW_GOAL,
-                    (uint8_t)replan_reason,
-                    s_planner_map_version,
-                    false,
-                    result.x,
-                    result.y,
-                    goal_x,
-                    goal_y
-                );
+                uint32_t now_tick = osKernelGetTickCount();
+                bool allow_replan = (now_tick - s_last_replan_tick) >= pdMS_TO_TICKS(PLANNER_REPLAN_MIN_INTERVAL_MS);
 
-                s_last_goal_x = goal_x;
-                s_last_goal_y = goal_y;
-                s_goal_initialized = true;
-                s_last_replan_tick = now_tick;
-                Debug_Post(DBG_MOD_SLAM,
-                           DBG_STAGE_SLAM_REPLAN_REQUESTED,
-                           (int16_t)replan_reason,
-                           result.x,
-                           result.y,
-                           goal_x,
-                           goal_y);
-                if (replan_reason != PLANNER_REPLAN_REASON_PATH_BLOCKED) {
-                    s_blocked_streak = 0;
+                if (replan_reason != PLANNER_REPLAN_REASON_NONE && allow_replan) {
+                    if (replan_reason == PLANNER_REPLAN_REASON_PATH_BLOCKED) {
+                        g_abort_astar = true;
+                    }
+
+                    send_planner_request(
+                        s_goal_initialized ? PLANNER_REQ_REPLAN : PLANNER_REQ_NEW_GOAL,
+                        (uint8_t)replan_reason,
+                        s_planner_map_version,
+                        active_goal_is_return,
+                        result.x,
+                        result.y,
+                        goal_x,
+                        goal_y
+                    );
+
+                    s_last_goal_x = goal_x;
+                    s_last_goal_y = goal_y;
+                    s_goal_initialized = true;
+                    s_last_replan_tick = now_tick;
+                    Debug_Post(DBG_MOD_SLAM,
+                               DBG_STAGE_SLAM_REPLAN_REQUESTED,
+                               (int16_t)replan_reason,
+                               result.x,
+                               result.y,
+                               goal_x,
+                               goal_y);
+                    if (replan_reason != PLANNER_REPLAN_REASON_PATH_BLOCKED) {
+                        s_blocked_streak = 0;
+                    }
                 }
+            } else {
+                s_blocked_streak = 0;
             }
 #endif
 
