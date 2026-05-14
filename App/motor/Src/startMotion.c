@@ -22,6 +22,11 @@
 #include <stdbool.h>
 
 #define PATH_DISPLAY_MAX_POINTS 80U
+#define TRACK_DIRECTION_FORWARD 1
+#define TRACK_DIRECTION_REVERSE (-1)
+#define TRACK_DIRECTION_SWITCH_DIST_M 0.04f
+#define TRACK_DIRECTION_HYSTERESIS_DEG 8.0f
+#define TRACK_PROJECTION_STALE_LIMIT 5U
 
 // 假设 IMU 校准标志位为全局变量（可以通过信号量或事件标志组优化，此处先保持简单）
 extern uint8_t g_imu_is_calibrated;
@@ -38,6 +43,8 @@ static uint32_t s_motion_projection_debug_tick = 0U;
 static int s_last_projection_index = 0;
 static float s_progress_s_m = 0.0f;
 static float s_track_last_linear_cmd_m_s = 0.0f;
+static int8_t s_track_direction = TRACK_DIRECTION_FORWARD;
+static uint8_t s_projection_stale_count = TRACK_PROJECTION_STALE_LIMIT;
 
 typedef struct {
     Point2D point;
@@ -57,6 +64,9 @@ typedef struct {
     bool valid;
     bool goal_reached;
 } TrackingCommand;
+
+static PathProjectionResult Motion_Find_Local_Projection(float robot_x, float robot_y);
+static PathProjectionResult Motion_Find_Global_Projection(float robot_x, float robot_y);
 
 static Point2D Motion_MapPoint_To_BodyFrame(const RobotState_t* current_robot_state, const Point2D* map_point)
 {
@@ -173,6 +183,53 @@ static Point2D Motion_Select_Lookahead_Point(float current_progress_s)
     return selected_point;
 }
 
+static float Motion_Compute_Heading_Error_For_Direction(const Point2D* lookahead_body_point, int8_t direction)
+{
+    if (lookahead_body_point == NULL) {
+        return 0.0f;
+    }
+
+    if (direction == TRACK_DIRECTION_REVERSE) {
+        return Robot_RadToDeg(atan2f(-lookahead_body_point->y, -lookahead_body_point->x));
+    }
+
+    return Robot_RadToDeg(atan2f(lookahead_body_point->y, lookahead_body_point->x));
+}
+
+static void Motion_Update_Track_Direction(const Point2D* lookahead_body_point)
+{
+    float forward_error;
+    float reverse_error;
+
+    if ((lookahead_body_point == NULL) || (s_projection_stale_count != 0U)) {
+        return;
+    }
+
+    forward_error = Motion_Abs(Motion_Compute_Heading_Error_For_Direction(lookahead_body_point,
+                                                                           TRACK_DIRECTION_FORWARD));
+    reverse_error = Motion_Abs(Motion_Compute_Heading_Error_For_Direction(lookahead_body_point,
+                                                                           TRACK_DIRECTION_REVERSE));
+
+    if (s_track_direction == TRACK_DIRECTION_FORWARD) {
+        if ((lookahead_body_point->x < -TRACK_DIRECTION_SWITCH_DIST_M) &&
+            ((reverse_error + TRACK_DIRECTION_HYSTERESIS_DEG) < forward_error)) {
+            s_track_direction = TRACK_DIRECTION_REVERSE;
+        }
+    } else {
+        if ((lookahead_body_point->x > TRACK_DIRECTION_SWITCH_DIST_M) &&
+            ((forward_error + TRACK_DIRECTION_HYSTERESIS_DEG) < reverse_error)) {
+            s_track_direction = TRACK_DIRECTION_FORWARD;
+        }
+    }
+}
+
+static void Motion_Mark_Projection_Stale(void)
+{
+    if (s_projection_stale_count < TRACK_PROJECTION_STALE_LIMIT) {
+        s_projection_stale_count++;
+    }
+}
+
 static TrackingCommand Motion_Build_Tracking_Command(const RobotState_t* current_robot_state)
 {
     TrackingCommand cmd = {0};
@@ -180,9 +237,11 @@ static TrackingCommand Motion_Build_Tracking_Command(const RobotState_t* current
     Point2D lookahead_body_point;
     float abs_heading_error_deg;
     float desired_linear_m_s;
-    float direction = 1.0f; // 【修改点1】新增：行驶方向标志，默认正向
+    float direction;
 
-    if ((current_robot_state == NULL) || (s_motion_path_len == 0U)) {
+    if ((current_robot_state == NULL) ||
+        (s_motion_path_len == 0U) ||
+        (s_projection_stale_count >= TRACK_PROJECTION_STALE_LIMIT)) {
         return cmd;
     }
 
@@ -193,16 +252,11 @@ static TrackingCommand Motion_Build_Tracking_Command(const RobotState_t* current
     cmd.goal_dist_m = Motion_Distance_Between(&robot_point, &cmd.goal_point);
 
     lookahead_body_point = Motion_MapPoint_To_BodyFrame(current_robot_state, &cmd.lookahead_point);
+    Motion_Update_Track_Direction(&lookahead_body_point);
 
-    // 【修改点2】判断前瞻点在车前还是车后，动态调整跟踪姿态
-    if (lookahead_body_point.x < 0.0f) {
-        direction = -1.0f; // 目标在后方，准备倒车
-        // 倒车时，将车尾视为车头：计算目标点与车尾的夹角
-        cmd.heading_error_deg = Robot_RadToDeg(atan2f(-lookahead_body_point.y, -lookahead_body_point.x));
-    } else {
-        direction = 1.0f;  // 目标在前方，正常正走
-        cmd.heading_error_deg = Robot_RadToDeg(atan2f(lookahead_body_point.y, lookahead_body_point.x));
-    }
+    direction = (s_track_direction == TRACK_DIRECTION_REVERSE) ? -1.0f : 1.0f;
+    cmd.heading_error_deg = Motion_Compute_Heading_Error_For_Direction(&lookahead_body_point,
+                                                                       s_track_direction);
 
     abs_heading_error_deg = Motion_Abs(cmd.heading_error_deg);
 
@@ -251,6 +305,8 @@ static void Motion_Reset_Runtime_Path(void)
     s_last_projection_index = 0;
     s_progress_s_m = 0.0f;
     s_track_last_linear_cmd_m_s = 0.0f;
+    s_track_direction = TRACK_DIRECTION_FORWARD;
+    s_projection_stale_count = TRACK_PROJECTION_STALE_LIMIT;
     memset(s_motion_path_arc_len, 0, sizeof(s_motion_path_arc_len));
     Reset_Trimmed_Path_State();
     Debug_Post(DBG_MOD_MOTION,
@@ -262,7 +318,17 @@ static void Motion_Reset_Runtime_Path(void)
                0.0f);
 }
 
-static void Motion_Load_New_Path(const GlobalPathSnapshot* path_snapshot)
+static bool Motion_Projection_Is_Usable(const PathProjectionResult* projection)
+{
+    float max_projection_dist_sq = PATH_PROJECTION_MAX_DIST_M * PATH_PROJECTION_MAX_DIST_M;
+
+    return (projection != NULL) &&
+           projection->valid &&
+           (projection->dist_sq_m <= max_projection_dist_sq);
+}
+
+static void Motion_Load_New_Path(const GlobalPathSnapshot* path_snapshot,
+                                 const RobotState_t* current_robot_state)
 {
     if ((path_snapshot == NULL) || (path_snapshot->path_ptr == NULL) || (path_snapshot->path_len <= 0)) {
         Motion_Reset_Runtime_Path();
@@ -289,8 +355,26 @@ static void Motion_Load_New_Path(const GlobalPathSnapshot* path_snapshot)
     s_motion_path_sequence = path_snapshot->sequence;
     s_trimmed_tf_version = 0U;
     s_last_projection_index = 0;
-    s_progress_s_m = 0.0f;
-    s_track_last_linear_cmd_m_s = 0.0f;
+    s_projection_stale_count = TRACK_PROJECTION_STALE_LIMIT;
+
+    if (current_robot_state != NULL) {
+        PathProjectionResult projection = Motion_Find_Global_Projection(current_robot_state->global_fast_x_m,
+                                                                        current_robot_state->global_fast_y_m);
+        if (Motion_Projection_Is_Usable(&projection)) {
+            s_progress_s_m = projection.progress_s_m;
+            s_last_projection_index = projection.segment_index;
+            s_projection_stale_count = 0U;
+        } else {
+            s_progress_s_m = 0.0f;
+            s_track_direction = TRACK_DIRECTION_FORWARD;
+            (void)Motion_Apply_Linear_Slew(0.0f);
+        }
+    } else {
+        s_progress_s_m = 0.0f;
+        s_track_direction = TRACK_DIRECTION_FORWARD;
+        (void)Motion_Apply_Linear_Slew(0.0f);
+    }
+
     Debug_Post(DBG_MOD_MOTION,
                DBG_STAGE_MOTION_PATH_LOADED,
                0,
@@ -409,6 +493,42 @@ static PathProjectionResult Motion_Find_Local_Projection(float robot_x, float ro
     return best;
 }
 
+static PathProjectionResult Motion_Find_Global_Projection(float robot_x, float robot_y)
+{
+    PathProjectionResult best = {0};
+    best.dist_sq_m = FLT_MAX;
+
+    if (s_motion_path_len == 0U) {
+        return best;
+    }
+
+    if (s_motion_path_len == 1U) {
+        float dx = robot_x - s_motion_path_buffer[0].x;
+        float dy = robot_y - s_motion_path_buffer[0].y;
+        best.point = s_motion_path_buffer[0];
+        best.progress_s_m = 0.0f;
+        best.dist_sq_m = dx * dx + dy * dy;
+        best.segment_index = 0;
+        best.valid = true;
+        return best;
+    }
+
+    int max_segment = (int)s_motion_path_len - 2;
+    for (int i = 0; i <= max_segment; ++i) {
+        PathProjectionResult candidate = Motion_Project_On_Segment(&s_motion_path_buffer[i],
+                                                                   &s_motion_path_buffer[i + 1],
+                                                                   s_motion_path_arc_len[i],
+                                                                   robot_x,
+                                                                   robot_y,
+                                                                   i);
+        if (candidate.valid && candidate.dist_sq_m < best.dist_sq_m) {
+            best = candidate;
+        }
+    }
+
+    return best;
+}
+
 static void Motion_Publish_Trimmed_Path(const PathProjectionResult* projection, uint32_t tf_version)
 {
     uint16_t out_len = 0U;
@@ -479,6 +599,8 @@ static void Motion_Update_Trimmed_Path_View(const RobotState_t* current_robot_st
     PathProjectionResult projection;
     float max_projection_dist_sq = PATH_PROJECTION_MAX_DIST_M * PATH_PROJECTION_MAX_DIST_M;
     bool has_path_snapshot;
+    bool loaded_new_path = false;
+    bool should_publish_trimmed_path = false;
 
     if (current_robot_state == NULL) {
         return;
@@ -487,7 +609,8 @@ static void Motion_Update_Trimmed_Path_View(const RobotState_t* current_robot_st
     has_path_snapshot = Get_Global_Path_Snapshot(&path_snapshot);
     if (has_path_snapshot) {
         if (path_snapshot.sequence != s_motion_path_sequence) {
-            Motion_Load_New_Path(&path_snapshot);
+            Motion_Load_New_Path(&path_snapshot, current_robot_state);
+            loaded_new_path = true;
         }
     } else if (s_motion_path_len == 0U) {
         Reset_Trimmed_Path_State();
@@ -499,15 +622,10 @@ static void Motion_Update_Trimmed_Path_View(const RobotState_t* current_robot_st
         return;
     }
 
-    if ((current_robot_state->tf_map_odom_version == s_trimmed_tf_version) &&
-        has_path_snapshot &&
-        (path_snapshot.sequence == s_motion_path_sequence)) {
-        return;
-    }
-
     projection = Motion_Find_Local_Projection(current_robot_state->global_fast_x_m,
                                               current_robot_state->global_fast_y_m);
     if (!projection.valid) {
+        Motion_Mark_Projection_Stale();
         return;
     }
 
@@ -523,8 +641,11 @@ static void Motion_Update_Trimmed_Path_View(const RobotState_t* current_robot_st
                        (float)projection.segment_index,
                        s_progress_s_m);
         }
+        Motion_Mark_Projection_Stale();
         return;
     }
+
+    s_projection_stale_count = 0U;
 
     if (projection.progress_s_m > s_progress_s_m) {
         float step = projection.progress_s_m - s_progress_s_m;
@@ -537,8 +658,12 @@ static void Motion_Update_Trimmed_Path_View(const RobotState_t* current_robot_st
     }
 
     s_last_projection_index = projection.segment_index;
-    s_trimmed_tf_version = current_robot_state->tf_map_odom_version;
-    Motion_Publish_Trimmed_Path(&projection, current_robot_state->tf_map_odom_version);
+    should_publish_trimmed_path = loaded_new_path ||
+                                  (current_robot_state->tf_map_odom_version != s_trimmed_tf_version);
+    if (should_publish_trimmed_path) {
+        s_trimmed_tf_version = current_robot_state->tf_map_odom_version;
+        Motion_Publish_Trimmed_Path(&projection, current_robot_state->tf_map_odom_version);
+    }
 }
 
 void StartMotionTask(void *argument)
@@ -605,13 +730,13 @@ void StartMotionTask(void *argument)
                 if (tracking_cmd.goal_reached) {
                     Motor_SetTargetVelocity(0.0f, 0.0f);
                     Motor_NormalStop();
+                    s_track_last_linear_cmd_m_s = 0.0f;
                 } else {
                     Motor_SetTargetVelocity(tracking_cmd.linear_cmd_m_s,
                                             tracking_cmd.yaw_rate_cmd_deg_s);
                 }
             } else {
-                s_track_last_linear_cmd_m_s = 0.0f;
-                Motor_SetTargetVelocity(0.0f, 0.0f);
+                Motor_SetTargetVelocity(Motion_Apply_Linear_Slew(0.0f), 0.0f);
             }
 #else
             Motor_SetTargetVelocity(0.0f, 0.0f);

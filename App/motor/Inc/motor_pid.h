@@ -22,7 +22,6 @@ void Task_MotorPID_Update(void); // 放入调度器，10ms执行一次
 // linear_v_ms: 目标线速度 (m/s)
 // angular_v_degs: 目标角速度 (deg/s)
 void Motor_SetTargetVelocity(float linear_v_ms, float angular_v_degs);
-float _Calculate_YawRate_Error_Correction(float current_yaw_rate);
 void Motor_Resume(void); // 从停止状态恢复运行
 float Motor_GetTargetYawRate(void);
 

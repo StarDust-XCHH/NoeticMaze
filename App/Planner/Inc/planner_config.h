@@ -26,8 +26,8 @@
 #define PLANNER_DOWNSAMPLE_SCALE 5            // 降采样映射：0.02——>0.1
 #define PLANNER_REPLAN_GOAL_SHIFT_CELLS 1    // 目标点相对上一次规划目标，变化多少个 planner cell 才触发“目标变化重规划”。
 #define PLANNER_REPLAN_DRIFT_CELLS 5        // 机器人当前位置相对旧路径起点漂移多少个 planner cell，才认为旧规划起点已经失效，需要重规划。
-#define PLANNER_REPLAN_BLOCKED_HITS 2       // 连续多少帧都检测到当前路径被阻断，才真正触发“路径被堵死”的重规划。
-#define PLANNER_REPLAN_MIN_INTERVAL_MS 150U // 两次重规划请求之间的最小时间间隔。
+#define PLANNER_REPLAN_BLOCKED_HITS 4       // 连续多少帧都检测到当前路径被阻断，才真正触发“路径被堵死”的重规划。
+#define PLANNER_REPLAN_MIN_INTERVAL_MS 300U // 两次重规划请求之间的最小时间间隔。
 
 
 

@@ -199,3 +199,31 @@ Fault:   last stage / tick / code
 3. 打开 UART 路径包和地图包超时统计，确认大路径包是否阻塞遥测。
 4. 打开 Planner 失败原因上报，区分无路径、越界、PQ overflow 和 abort。
 5. 用小地图和大地图分别测试，对比最后 debug stage、任务栈余量、路径长度和 UART 超时次数。
+
+# 前端控制仲裁建议
+
+本节只记录后续修改建议，不代表本轮已经修改固件协议、上位机代码或蓝牙解析逻辑。
+
+## 当前风险
+
+1. **`0x03` 手动控制包会直接写电机目标**
+   - `App/printf/Src/printfDebug.c` 收到 `ControlPacket_t` 后会直接调用 `Motor_SetTargetVelocity(pkt->linear_vel, pkt->yaw_rate)`。
+   - 自动路径跟踪线程也会周期性调用 `Motor_SetTargetVelocity()`。
+   - 如果前端在展示或调试时周期性发送 `0x03`，手动控制和自动跟踪会抢写同一组目标速度。
+
+2. **角速度单位注释存在风险**
+   - `App/printf/Inc/bt_protocol.h` 中 `ControlPacket_t.yaw_rate` 注释写的是 `rad/s`。
+   - `Motor_SetTargetVelocity()` 的接口语义是 `deg/s`。
+   - 如果上位机按 `rad/s` 发送而固件按 `deg/s` 使用，手动控制的转向量会与自动跟踪不一致。
+
+3. **前端开关可能改变实车行为**
+   - 前端打开时若持续发送控制包，可能覆盖或扰动自动跟踪目标。
+   - 前端关闭后自动跟踪独占电机目标，问题表现会不同。
+
+## 后续建议
+
+1. 增加明确的 `AUTO/MANUAL` 控制模式仲裁。
+2. 手动控制包只在 `MANUAL` 模式生效，自动路径跟踪只在 `AUTO` 模式写电机目标。
+3. 给手动控制增加超时，例如 200ms 内没有新 `0x03` 包则自动停车或回到安全状态。
+4. 统一协议单位：建议将 `ControlPacket_t.yaw_rate` 明确为 `deg/s`，或在接收端显式从 `rad/s` 转为 `deg/s`。
+5. 上位机显示页面与手动遥控页面分离，单纯可视化时不要发送 `0x03` 控制包。

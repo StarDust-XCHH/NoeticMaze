@@ -56,7 +56,7 @@
 #define TRACK_ENABLE_AUTONOMOUS_FOLLOW   1
 #define TRACK_LOOKAHEAD_DIST_M           0.18f   // 预瞄距离
 #define TRACK_HEADING_KP                 0.90f   // 航向误差P控制输出到角速度(deg/s per deg)
-#define TRACK_CRUISE_LINEAR_M_S          0.65f   // 默认巡航线速度
+#define TRACK_CRUISE_LINEAR_M_S          0.35f   // 默认巡航线速度（调试期先降速，稳定后再逐步提高）
 #define TRACK_MAX_LINEAR_M_S             1.0f   // 上层最终输出线速度限制
 #define TRACK_MAX_YAW_RATE_DEG_S         60.0f   // 上层最终输出角速度限制
 #define TRACK_TURN_SLOWDOWN_START_DEG    10.0f   // 超过该航向误差开始降线速
