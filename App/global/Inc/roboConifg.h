@@ -25,7 +25,7 @@
 
 // 自动返航：到达用户目标点后，自动规划回 INITIAL_ODOM_X/Y
 // 0: 关闭  1: 开启
-#define ENABLE_AUTO_RETURN_HOME 0
+#define ENABLE_AUTO_RETURN_HOME 1
 
 #define jumpOutIcp 0 // 是否跳过icp算法
 #define MIN_VALID_POINTS_FOR_INIT 280 // 需至少有 280 个有效点才认为icp初始化完成
