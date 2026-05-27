@@ -64,7 +64,7 @@
 #define TRACK_GOAL_SLOWDOWN_DIST_M       0.25f   // 接近终点开始降速
 #define TRACK_GOAL_STOP_DIST_M           0.05f   // 终点停车距离
 #define AUTO_RETURN_HOME_TRIGGER_DIST_M  TRACK_GOAL_STOP_DIST_M
-#define TRACK_HEADING_STOP_DEG           8.0f    // 终点附近允许停止的航向误差
+#define TRACK_HEADING_STOP_DEG           100.0f    // 终点附近允许停止的航向误差
 #define TRACK_MIN_LINEAR_M_S             0.08f   // 非停车状态下的最小前进线速度
 #define TRACK_ENABLE_LINEAR_SLEW         1
 #define TRACK_LINEAR_ACCEL_LIMIT_M_S2    1.60f   // 线速度斜坡限速

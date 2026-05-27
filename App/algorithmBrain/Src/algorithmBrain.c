@@ -80,6 +80,11 @@ static AutoReturnMode s_auto_return_mode = AUTO_RETURN_TO_USER_GOAL;
 // <--- 新增：记录用户下发的最新目标点 (赋初值避免刚开机无目标)
 static float g_user_goal_x = INITIAL_ODOM_X + 1.4f;
 static float g_user_goal_y = INITIAL_ODOM_Y - 1.4f;
+
+// static float g_user_goal_x = INITIAL_ODOM_X -0.7;
+// static float g_user_goal_y = INITIAL_ODOM_Y ;
+
+
 static uint32_t s_user_goal_generation = 0U;
 static uint32_t s_seen_user_goal_generation = 0U;
 
