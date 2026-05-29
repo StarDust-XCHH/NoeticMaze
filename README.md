@@ -141,3 +141,7 @@ After a successful CLion build, CMake runs `objcopy` to generate:
 - `NoeticMaze.bin`
 
 These files are generated from the ELF image in the active build directory and correspond to the firmware demonstrated in the Product Quality Video.
+
+## Known Issues
+
+- A* path planning may occasionally be triggered at unexpected times, which can cause oscillation in the robot motion. This is especially common when the map contains unknown prior regions or U-shaped turnbacks, and is pending follow-up fixes.
