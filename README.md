@@ -4,10 +4,6 @@ NoeticMaze is the embedded control and navigation project used for the NUCLEO-F4
 
 This ZIP contains the source code, header files, generated STM32 configuration files, CMake build files, linker/startup files, and supporting resources required to compile and run the demonstrated system on the NUCLEO-F446RE.
 
-## video
-
-<video src="asset/【北邮果园·课程设计】基于STM32的有限算力平台的slam自动驾驶小车表现效果演示_P2_前端上位机（不参与运算）_compressed_under_25MB.mp4" width="100%" controls autoplay loop muted></video>
-
 ## Target Platform
 
 - Board: NUCLEO-F446RE
